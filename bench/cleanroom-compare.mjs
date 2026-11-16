@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -31,27 +31,36 @@ function resolvePnpmBinDir() {
   return existsSync(misePnpmDir) ? misePnpmDir : '';
 }
 
+function isStockDshCandidate(candidatePath) {
+  if (!existsSync(candidatePath)) return false;
+  try {
+    const resolved = realpathSync(candidatePath).replace(/\\/g, '/');
+    return !resolved.includes('workbench') && resolved.includes('@deepseek-ai/dsh');
+  } catch {
+    return false;
+  }
+}
+
 function resolveStockDshBin() {
   if (process.env.DSH_BIN) return process.env.DSH_BIN;
   const binName = process.platform === 'win32' ? 'dsh.cmd' : 'dsh';
-  const nodeSibling = join(dirname(process.execPath), binName);
-  if (existsSync(nodeSibling)) return nodeSibling;
-  const localBin = join(ROOT_DIR, 'node_modules', '.bin', binName);
-  if (existsSync(localBin)) return localBin;
-  const userLocal = join(homedir(), '.local', 'bin', binName);
-  if (existsSync(userLocal)) {
-    try {
-      if (!realpathSync(userLocal).includes('workbench')) return userLocal;
-    } catch { /* ignore unreadable symlink */ }
+  const candidates = [
+    join(ROOT_DIR, 'node_modules', '.bin', binName),
+    join(dirname(process.execPath), binName),
+    join(homedir(), '.local', 'bin', binName),
+  ];
+  for (const cand of candidates) {
+    if (isStockDshCandidate(cand)) return cand;
   }
-  return binName;
+  return 'dsh';
 }
 
 const PNPM_BIN_DIR = resolvePnpmBinDir();
 const DSH_BIN = resolveStockDshBin();
 
 function childEnv(extra = {}) {
-  const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dirname(DSH_BIN)].filter(Boolean);
+  const dshBinDir = isAbsolute(DSH_BIN) ? dirname(DSH_BIN) : '';
+  const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dshBinDir].filter(Boolean);
   const existing = (process.env.PATH || '').split(delimiter).filter(Boolean);
   const merged = [...new Set([...priorityDirs, ...existing])].join(delimiter);
   return { ...process.env, ...extra, PATH: merged };
@@ -92,7 +101,8 @@ export function prepareCleanroomAgyHome() {
   mkdirSync(appSupportDir, { recursive: true, mode: 0o700 });
 
   const keychainsSrc = join(homedir(), 'Library', 'Keychains');
-  if (existsSync(keychainsSrc)) {
+  // Never expose host Keychain by default in cleanroom HOME; require explicit opt-in when running live agy OAuth on macOS.
+  if (process.env.NS_AGY_ALLOW_KEYCHAIN === '1' && existsSync(keychainsSrc)) {
     symlinkSync(keychainsSrc, join(libDir, 'Keychains'));
   }
 
@@ -265,6 +275,7 @@ export function prepareIsolatedBaselineDshHome() {
   });
   if (initRes.error || initRes.status !== 0) {
     const detail = initRes.error ? initRes.error.message : (initRes.stderr || initRes.stdout || `exit=${initRes.status}`).trim();
+    rmSync(dshHome, { recursive: true, force: true });
     throw new Error(`Failed initializing isolated baseline DSH profile: ${detail}`);
   }
   return dshHome;
@@ -299,7 +310,7 @@ async function runSingleDshAttempt({
     safePrompt,
   ];
   const started = performance.now();
-  const { stdout, stderr, code, sawFinal, finalWallMs } = await new Promise((resolveRun) => {
+  const { stdout, stderr, code, signal, sawFinal, terminatedAfterFinal, finalWallMs } = await new Promise((resolveRun) => {
     const child = spawn(cmd, cmdArgs, {
       cwd,
       env: childEnv({ DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath }),
@@ -309,12 +320,43 @@ async function runSingleDshAttempt({
     let err = '';
     let lineBuf = '';
     let sawFinalEvent = false;
+    let termAfterFinal = false;
     let recordedFinalWallMs = null;
+    let settled = false;
     let graceTimer = null;
+    let killFallbackTimer = null;
 
     const hardTimer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* ignore */ }
     }, 180_000);
+
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      if (graceTimer) clearTimeout(graceTimer);
+      if (killFallbackTimer) clearTimeout(killFallbackTimer);
+      resolveRun(payload);
+    };
+
+    const inspectLine = (raw) => {
+      const t = raw.trim();
+      if (!t.startsWith('{')) return;
+      try {
+        const ev = JSON.parse(t);
+        if (ev.type === 'final' && !sawFinalEvent) {
+          sawFinalEvent = true;
+          recordedFinalWallMs = Number((performance.now() - started).toFixed(1));
+          graceTimer = setTimeout(() => {
+            termAfterFinal = true;
+            try { child.kill('SIGTERM'); } catch { /* ignore */ }
+            killFallbackTimer = setTimeout(() => {
+              try { child.kill('SIGKILL'); } catch { /* ignore */ }
+            }, 2000);
+          }, 1500);
+        }
+      } catch { /* ignore */ }
+    };
 
     child.stdout.on('data', (chunk) => {
       const s = chunk.toString('utf8');
@@ -322,20 +364,7 @@ async function runSingleDshAttempt({
       lineBuf += s;
       const parts = lineBuf.split(/\r?\n/u);
       lineBuf = parts.pop() ?? '';
-      for (const raw of parts) {
-        const t = raw.trim();
-        if (!t.startsWith('{')) continue;
-        try {
-          const ev = JSON.parse(t);
-          if (ev.type === 'final' && !sawFinalEvent) {
-            sawFinalEvent = true;
-            recordedFinalWallMs = Number((performance.now() - started).toFixed(1));
-            graceTimer = setTimeout(() => {
-              try { child.kill('SIGTERM'); } catch { /* ignore */ }
-            }, 1500);
-          }
-        } catch { /* ignore */ }
-      }
+      for (const raw of parts) inspectLine(raw);
     });
 
     child.stderr.on('data', (chunk) => {
@@ -344,26 +373,27 @@ async function runSingleDshAttempt({
     });
 
     child.on('error', (spawnErr) => {
-      clearTimeout(hardTimer);
-      if (graceTimer) clearTimeout(graceTimer);
       err += `\n${spawnErr.message}`;
-      resolveRun({
+      finish({
         stdout: out,
         stderr: err,
         code: 1,
+        signal: null,
         sawFinal: false,
+        terminatedAfterFinal: false,
         finalWallMs: Number((performance.now() - started).toFixed(1)),
       });
     });
 
-    child.on('close', (exitCode) => {
-      clearTimeout(hardTimer);
-      if (graceTimer) clearTimeout(graceTimer);
-      resolveRun({
+    child.on('close', (exitCode, closeSignal) => {
+      if (lineBuf.trim()) inspectLine(lineBuf);
+      finish({
         stdout: out,
         stderr: err,
-        code: exitCode ?? 1,
+        code: exitCode ?? (closeSignal ? 1 : 0),
+        signal: closeSignal ?? null,
         sawFinal: sawFinalEvent,
+        terminatedAfterFinal: termAfterFinal,
         finalWallMs: recordedFinalWallMs ?? Number((performance.now() - started).toFixed(1)),
       });
     });
@@ -452,7 +482,8 @@ async function runSingleDshAttempt({
   }
   rmSync(patchFile, { force: true });
 
-  const resolvedExitCode = sawFinal && !errorMessage ? 0 : code;
+  const cleanPostFinalTerm = sawFinal && terminatedAfterFinal && (signal === 'SIGTERM' || signal === 'SIGKILL');
+  const resolvedExitCode = !errorMessage && (code === 0 || cleanPostFinalTerm) ? 0 : (code ?? 1);
   const cleanErr = errorMessage ? redactSecrets(errorMessage) : '';
 
   return {
@@ -488,7 +519,8 @@ async function runSingleDshAttempt({
 
 export async function runDshHeadless(opts) {
   const first = await runSingleDshAttempt(opts);
-  if (first.exitCode !== 0 && /RATE_LIMIT|429|RESOURCE_EXHAUSTED/i.test(first.errorMessage || '')) {
+  const firstDiag = `${first.errorMessage || ''}\n${first.stderrTail || ''}`;
+  if (first.exitCode !== 0 && /RATE_LIMIT|429|RESOURCE_EXHAUSTED/i.test(firstDiag)) {
     await new Promise((r) => setTimeout(r, 4500));
     const second = await runSingleDshAttempt(opts);
     return { ...second, retriedRateLimit: true };
@@ -553,12 +585,14 @@ async function inspectForewispStats(repoDir) {
 async function main() {
   const opts = parseArgs();
   mkdirSync(opts.outDir, { recursive: true });
-  const cleanAgy = prepareCleanroomAgyHome();
-  const factoryDshHome = prepareIsolatedBaselineDshHome();
+  let cleanAgy = null;
+  let factoryDshHome = null;
   const tempRepos = [];
   const track = (dir) => { tempRepos.push(dir); return dir; };
 
   try {
+    cleanAgy = prepareCleanroomAgyHome();
+    factoryDshHome = prepareIsolatedBaselineDshHome();
     if (!cleanAgy.cleanroomVerified) {
       throw new Error(`Cleanroom agy verification failed! plugins="${cleanAgy.pluginListOutput}", mcp="${cleanAgy.mcpListOutput}"`);
     }
@@ -717,8 +751,8 @@ async function main() {
     console.log(`Wrote telemetry report to ${outJson}`);
   } finally {
     for (const d of tempRepos) rmSync(d, { recursive: true, force: true });
-    cleanupCleanroomAgyHome(cleanAgy.agyHome);
-    rmSync(factoryDshHome, { recursive: true, force: true });
+    if (cleanAgy?.agyHome) cleanupCleanroomAgyHome(cleanAgy.agyHome);
+    if (factoryDshHome) rmSync(factoryDshHome, { recursive: true, force: true });
   }
 }
 

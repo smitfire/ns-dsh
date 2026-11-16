@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateSwitchyardRoutesToml } from '../plugins/team/dist/core/index.js';
 import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary } from '../dist/upgrade/canary.js';
@@ -13,26 +13,35 @@ const misePnpmDir = join(homedir(), '.local', 'share', 'mise', 'installs', 'pnpm
 const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || (existsSync(misePnpmDir) ? misePnpmDir : '');
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
+function isStockDshCandidate(candidatePath) {
+  if (!existsSync(candidatePath)) return false;
+  try {
+    const resolved = realpathSync(candidatePath).replace(/\\/g, '/');
+    return !resolved.includes('workbench') && resolved.includes('@deepseek-ai/dsh');
+  } catch {
+    return false;
+  }
+}
+
 function resolveStockDshBin() {
   if (process.env.DSH_BIN) return process.env.DSH_BIN;
   const binName = process.platform === 'win32' ? 'dsh.cmd' : 'dsh';
-  const nodeSibling = join(dirname(process.execPath), binName);
-  if (existsSync(nodeSibling)) return nodeSibling;
-  const localBin = join(ROOT_DIR, 'node_modules', '.bin', binName);
-  if (existsSync(localBin)) return localBin;
-  const userLocal = join(homedir(), '.local', 'bin', binName);
-  if (existsSync(userLocal)) {
-    try {
-      if (!realpathSync(userLocal).includes('workbench')) return userLocal;
-    } catch { /* ignore unreadable symlink */ }
+  const candidates = [
+    join(ROOT_DIR, 'node_modules', '.bin', binName),
+    join(dirname(process.execPath), binName),
+    join(homedir(), '.local', 'bin', binName),
+  ];
+  for (const cand of candidates) {
+    if (isStockDshCandidate(cand)) return cand;
   }
-  return binName;
+  return 'dsh';
 }
 
 const DSH_BIN = resolveStockDshBin();
 
 function childEnv(extra = {}) {
-  const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dirname(DSH_BIN)].filter(Boolean);
+  const dshBinDir = isAbsolute(DSH_BIN) ? dirname(DSH_BIN) : '';
+  const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dshBinDir].filter(Boolean);
   const existing = (process.env.PATH || '').split(delimiter).filter(Boolean);
   const merged = [...new Set([...priorityDirs, ...existing])].join(delimiter);
   return { ...process.env, DSH_HOME, ...extra, PATH: merged };
