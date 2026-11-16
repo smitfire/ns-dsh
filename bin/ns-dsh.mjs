@@ -10,7 +10,8 @@ import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary } from '..
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DSH_BIN = process.env.DSH_BIN || join(homedir(), '.local', 'bin', 'dsh');
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
-const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || '/Users/nicksmit/.local/share/mise/installs/pnpm/latest';
+const misePnpmDir = join(homedir(), '.local', 'share', 'mise', 'installs', 'pnpm', 'latest');
+const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || (existsSync(misePnpmDir) ? misePnpmDir : '');
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 function childEnv(extra = {}) {
@@ -133,6 +134,7 @@ function cmdUpgrade(args) {
     }
     backupProfileConfig(dir);
 
+    let upgradedGlobalFrom = '';
     if (targetDshVersion) {
       const cur = spawnSync(DSH_BIN, ['--version'], { env: childEnv(), encoding: 'utf8' });
       const currentVerMatch = (cur.stdout || '').match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
@@ -144,10 +146,11 @@ function cmdUpgrade(args) {
           stdio: 'inherit',
         });
         if (upDsh.error || upDsh.status !== 0) {
-          console.error(`Failed installing @deepseek-ai/dsh@${targetDshVersion} (${upDsh.error ? upDsh.error.message : `exit=${upDsh.status}`}).`);
+          console.error(`Failed installing @deepseek-ai/dsh@${targetDshVersion} (${upDsh.error ? upDsh.error.message : `exit=${upDsh.status}`}). Global npm prefix may need manual verification.`);
           rollbackProfiles([profile]);
           process.exit(upDsh.status ?? 1);
         }
+        upgradedGlobalFrom = currentVer;
       }
     }
 
@@ -155,6 +158,17 @@ function cmdUpgrade(args) {
     if (res.error || res.status !== 0) {
       console.error(`Upgrade update failed (${res.error ? res.error.message : `exit=${res.status}`}).`);
       rollbackProfiles([profile]);
+      if (upgradedGlobalFrom) {
+        const npmBin = join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
+        console.error(`Attempting to restore global @deepseek-ai/dsh@${upgradedGlobalFrom}...`);
+        const restoreDsh = spawnSync(npmBin, ['install', '-g', `@deepseek-ai/dsh@${upgradedGlobalFrom}`], {
+          env: childEnv(),
+          stdio: 'inherit',
+        });
+        if (restoreDsh.status !== 0) {
+          console.error(`Could not auto-restore @deepseek-ai/dsh@${upgradedGlobalFrom}; run: npm install -g @deepseek-ai/dsh@${upgradedGlobalFrom}`);
+        }
+      }
       process.exit(res.status ?? 1);
     }
   }

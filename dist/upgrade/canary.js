@@ -160,7 +160,13 @@ export function runUpgradeCanary(opts) {
         try {
             const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
             range = pkg.engines?.dsh ?? range;
-            compatible = assertSatisfiesDshPrereleaseRange(targetVersion, range);
+            try {
+                compatible = assertSatisfiesDshPrereleaseRange(targetVersion, range);
+            }
+            catch (rangeErr) {
+                compatible = false;
+                error = `unsupported engine range: ${rangeErr instanceof Error ? rangeErr.message : String(rangeErr)}`;
+            }
             const testCfg = join(dir, 'tsconfig.test.json');
             const tscLocal = join(dir, 'node_modules', '.bin', 'tsc');
             const tscRoot = join(root, 'node_modules', '.bin', 'tsc');
@@ -170,16 +176,17 @@ export function runUpgradeCanary(opts) {
             else if (existsSync(tscRoot))
                 tscBin = tscRoot;
             if (!existsSync(testCfg)) {
-                error = `missing ${testCfg}`;
+                error = error ? `${error}; missing ${testCfg}` : `missing ${testCfg}`;
             }
             else if (!tscBin) {
-                error = 'missing tsc binary in plugin or root node_modules/.bin';
+                error = error ? `${error}; missing tsc binary in plugin or root node_modules/.bin` : 'missing tsc binary in plugin or root node_modules/.bin';
             }
             else {
                 const tc = spawnSync(tscBin, ['-p', testCfg], { cwd: dir, encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
                 typecheckPassed = tc.status === 0;
                 if (!typecheckPassed) {
-                    error = (tc.error ? tc.error.message : `${tc.stdout ?? ''}\n${tc.stderr ?? ''}`).trim().slice(0, 500);
+                    const tcMsg = (tc.error ? tc.error.message : `${tc.stdout ?? ''}\n${tc.stderr ?? ''}`).trim().slice(0, 500);
+                    error = error ? `${error}; ${tcMsg}` : tcMsg;
                 }
                 else if (opts.runUnitTests) {
                     const testDir = join(dir, 'test');
@@ -191,7 +198,8 @@ export function runUpgradeCanary(opts) {
                         : [];
                     if (testFiles.length === 0) {
                         unitTestsPassed = false;
-                        error = `no test/*.test.ts files found in ${dir}`;
+                        const noTestsMsg = `no test/*.test.ts files found in ${dir}`;
+                        error = error ? `${error}; ${noTestsMsg}` : noTestsMsg;
                     }
                     else {
                         const nt = spawnSync(process.execPath, ['--test', ...testFiles], {
@@ -201,8 +209,10 @@ export function runUpgradeCanary(opts) {
                             stdio: ['ignore', 'pipe', 'pipe'],
                         });
                         unitTestsPassed = nt.status === 0;
-                        if (!unitTestsPassed)
-                            error = `${nt.stdout ?? ''}\n${nt.stderr ?? ''}`.trim().slice(0, 500);
+                        if (!unitTestsPassed) {
+                            const ntMsg = `${nt.stdout ?? ''}\n${nt.stderr ?? ''}`.trim().slice(0, 500);
+                            error = error ? `${error}; ${ntMsg}` : ntMsg;
+                        }
                     }
                 }
             }

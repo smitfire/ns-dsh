@@ -9,7 +9,12 @@ const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const AGY_BIN = process.env.AGY_BIN || join(homedir(), '.local', 'bin', 'agy');
 const DSH_BIN = process.env.DSH_BIN || join(homedir(), '.local', 'bin', 'dsh');
 const DSH_NATIVE_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
-const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || '/Users/nicksmit/.local/share/mise/installs/pnpm/latest';
+const misePnpmDir = join(homedir(), '.local', 'share', 'mise', 'installs', 'pnpm', 'latest');
+const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR && existsSync(process.env.PNPM_BIN_DIR)
+  ? process.env.PNPM_BIN_DIR
+  : existsSync(misePnpmDir)
+    ? misePnpmDir
+    : '';
 const SAFE_PATCH_VAL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const USE_DARWIN_TIME = process.platform === 'darwin' && existsSync('/usr/bin/time');
 
