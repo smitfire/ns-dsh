@@ -4,10 +4,15 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
+import LlmService, { LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm';
 import ToolsService from '@deepseek-ai/dsh-tools';
 import { generateSwitchyardRoutesToml } from '../plugins/team/dist/core/index.js';
 import * as flightRecorder from '../dist/telemetry/flight-recorder.js';
-import { runUpgradeCanary, satisfiesDshPrereleaseRange } from '../dist/upgrade/canary.js';
+import {
+  assertSatisfiesDshPrereleaseRange,
+  runUpgradeCanary,
+  satisfiesDshPrereleaseRange,
+} from '../dist/upgrade/canary.js';
 
 const ROOT = resolve(import.meta.dirname, '..');
 
@@ -33,11 +38,12 @@ test('All 5 child plugins declare compatible DSH 0.2.2-rc.3 manifests and cordis
   }
 });
 
-test('FlightRecorder captures step, direct vs PTC tool calls, and flushes telemetry snapshot cleanly', async () => {
+test('FlightRecorder captures step, direct vs PTC tool calls, DSH TokenUsage, and flushes/evicts on dispose', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ns-fr-test-'));
   const outPath = join(dir, 'telemetry.jsonl');
   const ctx = new Context();
   await ctx.plugin(ToolsService);
+  await ctx.plugin(LlmService);
   const fiber = ctx.plugin(flightRecorder, { outputPath: outPath });
   await fiber;
 
@@ -61,11 +67,59 @@ test('FlightRecorder captures step, direct vs PTC tool calls, and flushes teleme
       },
       async () => ({ kind: 'enter' as const, messages: [] }),
     );
+    class MockAdapter extends LlmAdapter {
+      async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+        if ((options as { purpose?: unknown }).purpose) {
+          yield { type: 'usage', usage: { inputTokens: 9999, outputTokens: 9999 } };
+        } else {
+          yield {
+            type: 'usage',
+            usage: { inputTokens: 100, cacheReadTokens: 400, cacheWriteTokens: 50, reasoningTokens: 25, outputTokens: 80 },
+          };
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      }
+    }
+    ctx.llm.registerAdapter(['google-antigravity', 'openai-codex'], new MockAdapter());
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'google-antigravity',
+      model: 'antigravity-gemini-3.8-flash',
+      messages: [],
+      sessionId: 'sess-fr-1' as never,
+    })) { /* drain */ }
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'openai-codex',
+      model: 'gpt-6-luna',
+      messages: [],
+      purpose: 'compaction' as never,
+      sessionId: 'sess-fr-1' as never,
+    })) { /* auxiliary call skipped */ }
     ctx.emit('agent/turn-stopping', { agent: fakeAgent, turn: 1 } as never);
 
-    const snap = ctx.nsFlightRecorder!.snapshot('sess-fr-1') as { directToolCalls: number; ptcToolCalls: number; steps: number };
+    const snap = ctx.nsFlightRecorder!.snapshot('sess-fr-1') as {
+      directToolCalls: number;
+      ptcToolCalls: number;
+      steps: number;
+      inputTokens: number;
+      uncachedInputTokens: number;
+      cachedInputTokens: number;
+      cacheWriteTokens: number;
+      thinkingTokens: number;
+      outputTokens: number;
+      step1PromptTokens: number | null;
+    };
     assert.equal(snap.steps, 1);
     assert.equal(snap.ptcToolCalls, 1);
+    assert.equal(snap.uncachedInputTokens, 100);
+    assert.equal(snap.cachedInputTokens, 400);
+    assert.equal(snap.cacheWriteTokens, 50);
+    assert.equal(snap.inputTokens, 550);
+    assert.equal(snap.step1PromptTokens, 550);
+    assert.equal(snap.thinkingTokens, 25);
+    assert.equal(snap.outputTokens, 80);
+
+    ctx.emit('agent/disposed', { agent: fakeAgent } as never);
+    ctx.emit('agent/disposed', { agent: null } as never);
     assert.equal(existsSync(outPath), true);
     const written = readFileSync(outPath, 'utf8');
     assert.match(written, /sess-fr-1/);
@@ -73,6 +127,16 @@ test('FlightRecorder captures step, direct vs PTC tool calls, and flushes teleme
     await fiber.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('Semver range matcher handles || unions, hyphen ranges, ^/~ bounds, and rejects malformed ranges', () => {
+  assert.equal(satisfiesDshPrereleaseRange('0.2.5', '0.2.2 - 0.3.0'), true);
+  assert.equal(satisfiesDshPrereleaseRange('0.3.1', '0.2.2 - 0.3.0'), false);
+  assert.equal(satisfiesDshPrereleaseRange('0.4.1', '^0.2.2 || ^0.4.0'), true);
+  assert.equal(satisfiesDshPrereleaseRange('0.3.0-0', '^0.2.2'), false);
+  assert.equal(satisfiesDshPrereleaseRange('0.2.9', '~0.2.2'), true);
+  assert.equal(satisfiesDshPrereleaseRange('0.3.0', '~0.2.2'), false);
+  assert.throws(() => assertSatisfiesDshPrereleaseRange('0.2.2', '>=0.2.2 || '), /unsupported|empty/i);
 });
 
 test('Canary dry-run validates all 5 plugins and Switchyard config generator stays valid', () => {

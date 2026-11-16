@@ -31,7 +31,9 @@ export interface SessionTelemetry {
   admittedBytes: number;
   ftsBytesSaved: number;
   inputTokens: number;
+  uncachedInputTokens: number;
   cachedInputTokens: number;
+  cacheWriteTokens: number;
   thinkingTokens: number;
   outputTokens: number;
   switchyardEscalations: number;
@@ -85,7 +87,9 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
         admittedBytes: 0,
         ftsBytesSaved: 0,
         inputTokens: 0,
+        uncachedInputTokens: 0,
         cachedInputTokens: 0,
+        cacheWriteTokens: 0,
         thinkingTokens: 0,
         outputTokens: 0,
         switchyardEscalations: 0,
@@ -141,12 +145,16 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
   });
 
   ctx.on('agent/disposed', ({ agent }) => {
+    if (!agent?.session?.id) return;
     const sid = String(agent.session.id);
     turnStartTimes.delete(sid);
-    if (sessions.size > 256) sessions.delete(sid);
+    // Persist completed session rows before evicting so memory stays bounded without losing telemetry.
+    flushToDisk();
+    sessions.delete(sid);
   });
 
   ctx.on('agent/pre-step', async (payload, next) => {
+    if (!payload.agent?.session?.id) return next();
     const sid = String(payload.agent.session.id);
     const st = ensure(sid);
     if (!turnStartTimes.has(sid)) {
@@ -158,6 +166,10 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
   });
 
   ctx.on('llm/stream', async function* (options, next) {
+    if ((options as { purpose?: unknown }).purpose) {
+      yield* next();
+      return;
+    }
     const rawSid = (options as { sessionId?: unknown }).sessionId;
     const sid = rawSid !== undefined ? String(rawSid) : 'default';
     const st = ensure(sid);
@@ -168,16 +180,20 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
       }
       const usage = (chunk as { usage?: Record<string, unknown> })?.usage;
       if (usage && typeof usage === 'object') {
-        const inTok = Number(usage.inputTokens ?? usage.input_tokens ?? 0);
-        const cacheTok = Number(usage.cachedInputTokens ?? usage.cache_read_input_tokens ?? 0);
-        const thinkTok = Number(usage.thinkingTokens ?? usage.reasoningTokens ?? 0);
+        const uncachedIn = Number(usage.inputTokens ?? usage.input_tokens ?? 0);
+        const cacheRead = Number(usage.cacheReadTokens ?? usage.cachedInputTokens ?? usage.cache_read_input_tokens ?? 0);
+        const cacheWrite = Number(usage.cacheWriteTokens ?? usage.cache_creation_input_tokens ?? 0);
+        const promptStepTokens = uncachedIn + cacheRead + cacheWrite;
+        const thinkTok = Number(usage.reasoningTokens ?? usage.thinkingTokens ?? 0);
         const outTok = Number(usage.outputTokens ?? usage.output_tokens ?? 0);
-        if (inTok > 0) {
-          if (st.step1PromptTokens === null) st.step1PromptTokens = inTok;
-          st.contextCurve.push(inTok);
-          st.inputTokens += inTok;
+        if (promptStepTokens > 0) {
+          if (st.step1PromptTokens === null) st.step1PromptTokens = promptStepTokens;
+          st.contextCurve.push(promptStepTokens);
+          st.inputTokens += promptStepTokens;
+          st.uncachedInputTokens += uncachedIn;
+          st.cachedInputTokens += cacheRead;
+          st.cacheWriteTokens += cacheWrite;
         }
-        if (cacheTok > 0) st.cachedInputTokens += cacheTok;
         if (thinkTok > 0) st.thinkingTokens += thinkTok;
         if (outTok > 0) st.outputTokens += outTok;
       }
@@ -186,7 +202,7 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
   });
 
   ctx.on('tools/result', (exec) => {
-    const sid = exec.agent ? String(exec.agent.session.id) : 'default';
+    const sid = exec.agent?.session?.id ? String(exec.agent.session.id) : 'default';
     const st = ensure(sid);
     if (exec.parent) {
       st.ptcToolCalls += 1;
@@ -198,6 +214,7 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
   });
 
   ctx.on('agent/turn-stopping', ({ agent }) => {
+    if (!agent?.session?.id) return;
     const sid = String(agent.session.id);
     const st = ensure(sid);
     const t0 = turnStartTimes.get(sid);

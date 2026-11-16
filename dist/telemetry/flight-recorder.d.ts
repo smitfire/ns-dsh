@@ -20,7 +20,9 @@ export interface SessionTelemetry {
     admittedBytes: number;
     ftsBytesSaved: number;
     inputTokens: number;
+    uncachedInputTokens: number;
     cachedInputTokens: number;
+    cacheWriteTokens: number;
     thinkingTokens: number;
     outputTokens: number;
     switchyardEscalations: number;

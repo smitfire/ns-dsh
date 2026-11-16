@@ -3,6 +3,7 @@ export interface CanaryPluginCheck {
     engineRange: string;
     compatible: boolean;
     typecheckPassed: boolean;
+    unitTestsPassed?: boolean;
     durationMs: number;
     error?: string;
 }
@@ -13,6 +14,11 @@ export interface UpgradeCanaryResult {
     checks: CanaryPluginCheck[];
     notes: string[];
 }
+/**
+ * Evaluates semver comparators including `||` unions, `A - B` hyphen ranges,
+ * `^`/`~` explicit upper bounds, and prerelease comparisons; throws on invalid range syntax.
+ */
+export declare function assertSatisfiesDshPrereleaseRange(version: string, range: string): boolean;
 export declare function satisfiesDshPrereleaseRange(version: string, range: string): boolean;
 export declare function backupProfileConfig(profileDir: string): string;
 export declare function rollbackProfileConfig(profileDir: string): boolean;

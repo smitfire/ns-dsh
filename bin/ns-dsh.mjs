@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateSwitchyardRoutesToml } from '../plugins/team/dist/core/index.js';
 import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary } from '../dist/upgrade/canary.js';
@@ -10,6 +10,21 @@ import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary } from '..
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DSH_BIN = process.env.DSH_BIN || join(homedir(), '.local', 'bin', 'dsh');
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
+const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || '/Users/nicksmit/.local/share/mise/installs/pnpm/latest';
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+function childEnv(extra = {}) {
+  const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dirname(DSH_BIN)].filter(Boolean);
+  const existing = (process.env.PATH || '').split(delimiter).filter(Boolean);
+  const merged = [...new Set([...priorityDirs, ...existing])].join(delimiter);
+  return { ...process.env, ...extra, PATH: merged };
+}
+
+function resolveDshVersion(dshVer) {
+  if (dshVer.error) return `unavailable (${dshVer.error.message})`;
+  if (dshVer.status === 0) return dshVer.stdout.trim();
+  return `exit=${dshVer.status}`;
+}
 
 function printUsage() {
   console.log(`Usage: ns-dsh <command> [options]
@@ -42,7 +57,7 @@ function flagValue(args, flag) {
 
 function cmdStatus() {
   const pkg = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8'));
-  const dshVer = spawnSync(DSH_BIN, ['--version'], { encoding: 'utf8' });
+  const dshVer = spawnSync(DSH_BIN, ['--version'], { env: childEnv(), encoding: 'utf8' });
   const plugins = ['context', 'codemode', 'cuga', 'board', 'team'].map((p) => {
     const subPkg = JSON.parse(readFileSync(join(ROOT_DIR, 'plugins', p, 'package.json'), 'utf8'));
     return { name: subPkg.name, version: subPkg.version, engines: subPkg.engines };
@@ -51,9 +66,21 @@ function cmdStatus() {
     name: pkg.name,
     version: pkg.version,
     dshBinary: DSH_BIN,
-    dshVersion: dshVer.error ? `unavailable (${dshVer.error.message})` : dshVer.status === 0 ? dshVer.stdout.trim() : `exit=${dshVer.status}`,
+    dshVersion: resolveDshVersion(dshVer),
     plugins,
   }, null, 2));
+}
+
+function rollbackProfiles(profileNames) {
+  for (const name of profileNames) {
+    const pDir = resolveProfileDir(name);
+    if (!existsSync(pDir)) {
+      console.error(`Skipping rollback for profile "${name}" (directory missing).`);
+      continue;
+    }
+    const restored = rollbackProfileConfig(pDir);
+    console.error(restored ? `Restored backup for profile "${name}".` : `No backup found for profile "${name}".`);
+  }
 }
 
 function cmdInstall(args) {
@@ -67,17 +94,20 @@ function cmdInstall(args) {
     join(ROOT_DIR, 'plugins', 'team'),
     ROOT_DIR,
   ];
+  const installed = [];
   for (const profile of profiles) {
     const dir = resolveProfileDir(profile);
     if (existsSync(dir)) backupProfileConfig(dir);
     const res = spawnSync(DSH_BIN, ['plugin', '--profile', profile, 'add', ...pkgPaths], {
+      env: childEnv(),
       stdio: 'inherit',
     });
     if (res.error || res.status !== 0) {
-      console.error(`Failed installing into DSH profile "${profile}" (${res.error ? res.error.message : `exit=${res.status}`}). Restoring backup if present.`);
-      if (existsSync(dir)) rollbackProfileConfig(dir);
+      console.error(`Failed installing into DSH profile "${profile}" (${res.error ? res.error.message : `exit=${res.status}`}).`);
+      rollbackProfiles([...installed.reverse(), profile]);
       process.exit(res.status ?? 1);
     }
+    installed.push(profile);
   }
 }
 
@@ -85,6 +115,9 @@ function cmdUpgrade(args) {
   const dryRun = args.includes('--dry-run');
   const rawTarget = flagValue(args, '--target');
   const targetDshVersion = rawTarget && rawTarget !== 'latest' ? rawTarget : undefined;
+  if (targetDshVersion && !SEMVER_RE.test(targetDshVersion)) {
+    throw new Error(`Invalid --target version "${targetDshVersion}"`);
+  }
   const canary = runUpgradeCanary({ workspaceRoot: ROOT_DIR, targetDshVersion, dryRun, runUnitTests: !dryRun });
   console.log(JSON.stringify(canary, null, 2));
   if (!canary.ok) {
@@ -94,11 +127,34 @@ function cmdUpgrade(args) {
   if (!dryRun) {
     const profile = flagValue(args, '--profile') || 'web';
     const dir = resolveProfileDir(profile);
-    if (existsSync(dir)) backupProfileConfig(dir);
-    const res = spawnSync(DSH_BIN, ['plugin', '--profile', profile, 'update'], { stdio: 'inherit' });
+    if (!existsSync(dir)) {
+      console.error(`DSH profile "${profile}" not found at ${dir}; nothing to upgrade.`);
+      process.exit(1);
+    }
+    backupProfileConfig(dir);
+
+    if (targetDshVersion) {
+      const cur = spawnSync(DSH_BIN, ['--version'], { env: childEnv(), encoding: 'utf8' });
+      const currentVerMatch = (cur.stdout || '').match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
+      const currentVer = currentVerMatch ? currentVerMatch[0] : '';
+      if (currentVer !== targetDshVersion) {
+        const npmBin = join(dirname(process.execPath), process.platform === 'win32' ? 'npm.cmd' : 'npm');
+        const upDsh = spawnSync(npmBin, ['install', '-g', `@deepseek-ai/dsh@${targetDshVersion}`], {
+          env: childEnv(),
+          stdio: 'inherit',
+        });
+        if (upDsh.error || upDsh.status !== 0) {
+          console.error(`Failed installing @deepseek-ai/dsh@${targetDshVersion} (${upDsh.error ? upDsh.error.message : `exit=${upDsh.status}`}).`);
+          rollbackProfiles([profile]);
+          process.exit(upDsh.status ?? 1);
+        }
+      }
+    }
+
+    const res = spawnSync(DSH_BIN, ['plugin', '--profile', profile, 'update'], { env: childEnv(), stdio: 'inherit' });
     if (res.error || res.status !== 0) {
-      console.error(`Upgrade update failed (${res.error ? res.error.message : `exit=${res.status}`}); restoring backup.`);
-      if (existsSync(dir)) rollbackProfileConfig(dir);
+      console.error(`Upgrade update failed (${res.error ? res.error.message : `exit=${res.status}`}).`);
+      rollbackProfiles([profile]);
       process.exit(res.status ?? 1);
     }
   }
@@ -156,15 +212,24 @@ function cmdInit(args) {
 }
 
 const [, , cmd, ...rest] = process.argv;
-if (cmd === 'status') cmdStatus();
-else if (cmd === 'install') cmdInstall(rest);
-else if (cmd === 'upgrade') cmdUpgrade(rest);
-else if (cmd === 'rollback') cmdRollback(rest);
-else if (cmd === 'init') cmdInit(rest);
-else if (cmd === 'compare') {
-  const res = spawnSync(process.execPath, [join(ROOT_DIR, 'bench/cleanroom-compare.mjs'), ...rest], { stdio: 'inherit' });
-  process.exit(res.status ?? 0);
-} else {
+try {
+  if (cmd === 'status') cmdStatus();
+  else if (cmd === 'install') cmdInstall(rest);
+  else if (cmd === 'upgrade') cmdUpgrade(rest);
+  else if (cmd === 'rollback') cmdRollback(rest);
+  else if (cmd === 'init') cmdInit(rest);
+  else if (cmd === 'compare') {
+    const res = spawnSync(process.execPath, [join(ROOT_DIR, 'bench/cleanroom-compare.mjs'), ...rest], {
+      env: childEnv(),
+      stdio: 'inherit',
+    });
+    process.exit(res.status ?? 0);
+  } else {
+    printUsage();
+    process.exit(cmd ? 2 : 0);
+  }
+} catch (err) {
+  console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
   printUsage();
-  process.exit(cmd ? 2 : 0);
+  process.exit(2);
 }

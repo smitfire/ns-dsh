@@ -2,15 +2,23 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, delimiter, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const AGY_BIN = process.env.AGY_BIN || join(homedir(), '.local', 'bin', 'agy');
 const DSH_BIN = process.env.DSH_BIN || join(homedir(), '.local', 'bin', 'dsh');
 const DSH_NATIVE_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
-const SAFE_PATCH_VAL_RE = /^[\w./-]+$/;
+const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || '/Users/nicksmit/.local/share/mise/installs/pnpm/latest';
+const SAFE_PATCH_VAL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const USE_DARWIN_TIME = process.platform === 'darwin' && existsSync('/usr/bin/time');
+
+function childEnv(extra = {}) {
+  const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dirname(DSH_BIN)].filter(Boolean);
+  const existing = (process.env.PATH || '').split(delimiter).filter(Boolean);
+  const merged = [...new Set([...priorityDirs, ...existing])].join(delimiter);
+  return { ...process.env, ...extra, PATH: merged };
+}
 
 function parseArgs() {
   const argv = process.argv.slice(2);
@@ -18,7 +26,7 @@ function parseArgs() {
   const tasksIdx = argv.indexOf('--tasks');
   return {
     outDir: resolve(outIdx >= 0 && argv[outIdx + 1] ? argv[outIdx + 1] : join(ROOT_DIR, 'evidence')),
-    tasks: tasksIdx >= 0 && argv[tasksIdx + 1] ? argv[tasksIdx + 1].split(',') : ['T1', 'T2', 'T3', 'T4'],
+    tasks: tasksIdx >= 0 && argv[tasksIdx + 1] ? argv[tasksIdx + 1].split(',') : ['T1', 'T2', 'T3', 'T4', 'T5'],
     verifyCleanroomOnly: argv.includes('--verify-cleanroom'),
   };
 }
@@ -27,7 +35,9 @@ function redactSecrets(text) {
   return String(text || '')
     .replace(/\bDO_NOT_EXFILTRATE_\w+/g, '[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_KEY]')
-    .replace(/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, 'Bearer [REDACTED]');
+    .replace(/\b(?:gsk_|xai-|AIza)[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_KEY]')
+    .replace(/\bBearer\s+[A-Za-z0-9._-]{12,}\b/gi, 'Bearer [REDACTED]')
+    .replace(/"(api_?key|token|secret)"\s*:\s*"[^"]{4,}"/gi, '"$1": "[REDACTED]"');
 }
 
 function parseMaxRssMb(timeStderr) {
@@ -45,7 +55,7 @@ export function prepareCleanroomAgyHome() {
     copyFileSync(srcAuth, dst);
     chmodSync(dst, 0o600);
   }
-  const env = { ...process.env, HOME: agyHome };
+  const env = childEnv({ HOME: agyHome });
   const pluginList = spawnSync(AGY_BIN, ['plugin', 'list'], { env, encoding: 'utf8', timeout: 20_000 });
   const mcpList = spawnSync(AGY_BIN, ['mcp', 'list'], { env, encoding: 'utf8', timeout: 20_000 });
   const pluginText = `${pluginList.stdout ?? ''}\n${pluginList.stderr ?? ''}`.trim();
@@ -53,13 +63,14 @@ export function prepareCleanroomAgyHome() {
   return {
     agyHome,
     cleanroomVerified: /No plugins installed/i.test(pluginText) && /No MCP servers configured/i.test(mcpText),
-    pluginListOutput: pluginText,
-    mcpListOutput: mcpText,
+    pluginListOutput: redactSecrets(pluginText),
+    mcpListOutput: redactSecrets(mcpText),
   };
 }
 
 export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flash-low' }) {
   const started = performance.now();
+  const safePrompt = prompt.startsWith('-') ? `Task: ${prompt}` : prompt;
   const cmd = USE_DARWIN_TIME ? '/usr/bin/time' : AGY_BIN;
   const cmdArgs = [
     ...(USE_DARWIN_TIME ? ['-l', AGY_BIN] : []),
@@ -70,13 +81,13 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
     '--model',
     model,
     '--print',
-    prompt,
+    safePrompt,
     '--output-format',
     'json',
   ];
   const res = spawnSync(cmd, cmdArgs, {
     cwd,
-    env: { ...process.env, HOME: agyHome },
+    env: childEnv({ HOME: agyHome }),
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 10 * 1024 * 1024,
@@ -95,6 +106,7 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
   const firstModel = Object.values(models)[0] ?? {};
   const tokens = firstModel.tokens ?? parsed?.usage ?? {};
   const tools = stats.tools ?? {};
+  const redactedRawStats = parsed?.stats ? JSON.parse(redactSecrets(JSON.stringify(parsed.stats))) : null;
 
   return {
     harness: 'factory-default-agy',
@@ -108,16 +120,18 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
     thinkingTokens: Number(tokens.thoughts ?? 0),
     toolCalls: Number(tools.totalCalls ?? parsed?.tool_calls ?? 0),
     responseText: redactSecrets(String(parsed?.response ?? parsed?.text ?? res.stdout ?? '').slice(0, 2000)),
-    rawStats: parsed?.stats ?? null,
+    rawStats: redactedRawStats,
     stderrTail: redactSecrets((res.stderr || '').slice(-400)),
+    ...(res.status === 0 && !parsed ? { parseWarning: 'agy stdout contained no JSON object' } : {}),
   };
 }
 
 function assertSafePatchVal(name, val) {
-  if (!SAFE_PATCH_VAL_RE.test(String(val))) {
+  const s = String(val);
+  if (!SAFE_PATCH_VAL_RE.test(s) || s.includes('..')) {
     throw new Error(`unsafe patch value for ${name}`);
   }
-  return JSON.stringify(String(val));
+  return s;
 }
 
 function makeDshOverlayPatch({ provider, model, reasoningEffort = 'low', disableNsPlugins = false, ptcEnabled = false }) {
@@ -197,7 +211,7 @@ export function runDshHeadless({
   const started = performance.now();
   const res = spawnSync(cmd, cmdArgs, {
     cwd,
-    env: { ...process.env, DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath },
+    env: childEnv({ DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath }),
     encoding: 'utf8',
     timeout: 180_000,
     maxBuffer: 10 * 1024 * 1024,
@@ -213,7 +227,9 @@ export function runDshHeadless({
   }
 
   let inputTokens = 0;
+  let uncachedInputTokens = 0;
   let cachedInputTokens = 0;
+  let cacheWriteTokens = 0;
   let outputTokens = 0;
   let thinkingTokens = 0;
   let steps = 0;
@@ -227,15 +243,20 @@ export function runDshHeadless({
     if (ev.type === 'step/end' || ev.type === 'turn/end' || ev.type === 'assistant/message') {
       const u = ev.data?.usage ?? ev.usage;
       if (u && typeof u === 'object') {
-        const inTok = Number(u.inputTokens ?? u.input_tokens ?? 0);
-        if (inTok > 0) {
-          if (step1PromptTokens === null) step1PromptTokens = inTok;
-          contextCurve.push(inTok);
-          inputTokens += inTok;
+        const uncachedIn = Number(u.inputTokens ?? u.input_tokens ?? 0);
+        const cacheRead = Number(u.cacheReadTokens ?? u.cachedInputTokens ?? u.cache_read_input_tokens ?? 0);
+        const cacheWrite = Number(u.cacheWriteTokens ?? u.cache_creation_input_tokens ?? 0);
+        const promptStepTokens = uncachedIn + cacheRead + cacheWrite;
+        if (promptStepTokens > 0) {
+          if (step1PromptTokens === null) step1PromptTokens = promptStepTokens;
+          contextCurve.push(promptStepTokens);
+          inputTokens += promptStepTokens;
         }
-        cachedInputTokens += Number(u.cachedInputTokens ?? u.cache_read_input_tokens ?? 0);
+        uncachedInputTokens += uncachedIn;
+        cachedInputTokens += cacheRead;
+        cacheWriteTokens += cacheWrite;
         outputTokens += Number(u.outputTokens ?? u.output_tokens ?? 0);
-        thinkingTokens += Number(u.thinkingTokens ?? u.reasoningTokens ?? 0);
+        thinkingTokens += Number(u.reasoningTokens ?? u.thinkingTokens ?? 0);
       }
     }
     if (ev.type === 'step/start') steps += 1;
@@ -253,7 +274,8 @@ export function runDshHeadless({
     try {
       const lines = readFileSync(telemetryPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean);
       const parsed = lines.length > 0 ? JSON.parse(lines[lines.length - 1]) : null;
-      flightTelemetry = Array.isArray(parsed?.telemetry) ? parsed.telemetry[parsed.telemetry.length - 1] ?? null : null;
+      const rows = Array.isArray(parsed?.telemetry) ? parsed.telemetry : [];
+      flightTelemetry = rows.find((r) => Number(r?.steps ?? 0) > 0) ?? rows[0] ?? null;
     } catch { /* ignore */ }
     rmSync(telemetryPath, { force: true });
   }
@@ -268,7 +290,7 @@ export function runDshHeadless({
     wallMs,
     bootMs: flightTelemetry?.bootMs ?? null,
     ttfrMs: flightTelemetry?.ttfrMs ?? null,
-    peakRssMb,
+    peakRssMb: peakRssMb ?? flightTelemetry?.peakRssMb ?? null,
     steps: flightTelemetry?.steps ?? steps,
     directToolCalls: flightTelemetry?.directToolCalls ?? directToolCalls,
     ptcToolCalls: flightTelemetry?.ptcToolCalls ?? ptcToolCalls,
@@ -279,7 +301,9 @@ export function runDshHeadless({
     ftsBytesSaved: flightTelemetry?.ftsBytesSaved ?? 0,
     switchyardEscalations: flightTelemetry?.switchyardEscalations ?? 0,
     inputTokens: flightTelemetry?.inputTokens ?? inputTokens,
+    uncachedInputTokens: flightTelemetry?.uncachedInputTokens ?? uncachedInputTokens,
     cachedInputTokens: flightTelemetry?.cachedInputTokens ?? cachedInputTokens,
+    cacheWriteTokens: flightTelemetry?.cacheWriteTokens ?? cacheWriteTokens,
     thinkingTokens: flightTelemetry?.thinkingTokens ?? thinkingTokens,
     outputTokens: flightTelemetry?.outputTokens ?? outputTokens,
     responseText: redactSecrets(finalText.slice(0, 2000)),
@@ -303,7 +327,12 @@ function createTaskRepo(prefix, files) {
 }
 
 async function seedForewisp(repoDir) {
-  const { ForewispBridge } = await import('../plugins/context/dist/core/index.js');
+  const distPath = fileURLToPath(new URL('../plugins/context/dist/core/index.js', import.meta.url));
+  if (!existsSync(distPath)) {
+    console.warn(`[bench] skipping Forewisp seed: ${distPath} not built`);
+    return false;
+  }
+  const { ForewispBridge } = await import(pathToFileURL(distPath).href);
   const fw = new ForewispBridge({ workspaceRoot: repoDir, mode: 'local' });
   await fw.upsert({
     kind: 'memory',
@@ -314,6 +343,26 @@ async function seedForewisp(repoDir) {
     sourcePaths: ['src/config.ts', 'src/app.ts'],
   });
   fw.close();
+  return true;
+}
+
+async function inspectForewispStats(repoDir) {
+  const distPath = fileURLToPath(new URL('../plugins/context/dist/core/index.js', import.meta.url));
+  if (!existsSync(distPath)) return { available: false, entries: 0, active: 0, offers: [] };
+  const { ForewispBridge } = await import(pathToFileURL(distPath).href);
+  const fw = new ForewispBridge({ workspaceRoot: repoDir, mode: 'local' });
+  try {
+    const s = await fw.stats();
+    const res = await fw.retrieve('INGRESS_TIMEOUT_MS DOWNSTREAM_BUDGET_MS RETRY_BACKOFF_MS margin', 'bench-inspect');
+    return {
+      available: true,
+      entries: s.entries,
+      active: s.active,
+      offers: res.offers.map((o) => ({ id: o.id, kind: o.kind, title: o.title })),
+    };
+  } finally {
+    fw.close();
+  }
 }
 
 async function main() {
@@ -388,7 +437,7 @@ async function main() {
         'logs/server.log': bigLog,
         'package.json': JSON.stringify({ name: 't2-fixture' }),
       };
-      const prompt = 'Find the exact error code (E_...) and file:line inside logs/server.log. Reply concisely with both.';
+      const prompt = 'Read logs/server.log using your file read tool to find the exact error code (E_...) and file:line inside it. Reply concisely with both.';
       const agyRepo = track(createTaskRepo('ns-t2-agy-', files));
       const dshRepo = track(createTaskRepo('ns-t2-dsh-', files));
       const nsRepo = track(createTaskRepo('ns-t2-ns-', files));
@@ -444,6 +493,38 @@ async function main() {
       });
     }
 
+    if (opts.tasks.includes('T5')) {
+      const files = {
+        'package.json': JSON.stringify({ name: 't5-cuga-reuse' }),
+        'src/gateway.ts': 'import { DOWNSTREAM_BUDGET_MS } from "./timeout-policy.js";\nexport const INGRESS_TIMEOUT_MS = 4500;\nexport function checkBudget() { return INGRESS_TIMEOUT_MS - DOWNSTREAM_BUDGET_MS; }\n',
+        'src/timeout-policy.ts': 'export const DOWNSTREAM_BUDGET_MS = 3200;\nexport const RETRY_BACKOFF_MS = 250;\n',
+        'src/downstream.ts': 'import { RETRY_BACKOFF_MS } from "./timeout-policy.js";\nexport function safetyMargin(raw) { return raw - RETRY_BACKOFF_MS; }\n',
+      };
+      const t5Repo = track(createTaskRepo('ns-t5-cuga-', files));
+      const coldPrompt = 'Read src/gateway.ts, src/timeout-policy.ts, and src/downstream.ts individually using your file read tool, then compute the exact remaining safety margin in ms (INGRESS_TIMEOUT_MS - DOWNSTREAM_BUDGET_MS - RETRY_BACKOFF_MS). Reply concisely with the equation and result.';
+      const coldRun = {
+        task: 'T5',
+        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: t5Repo, prompt: coldPrompt, label: 'ns-dsh-cuga-cold' }),
+      };
+      const forewispAfterCold = await inspectForewispStats(t5Repo);
+      const warmPrompt = 'What are the exact numeric values of INGRESS_TIMEOUT_MS, DOWNSTREAM_BUDGET_MS, RETRY_BACKOFF_MS, and the resulting safety margin in ms? Reply concisely.';
+      const warmRun = {
+        task: 'T5',
+        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: t5Repo, prompt: warmPrompt, label: 'ns-dsh-cuga-warm' }),
+      };
+      report.runs.push(coldRun, warmRun);
+      report.t5CugaReuse = {
+        crystallizedEntriesCount: forewispAfterCold.active,
+        crystallizedOffers: forewispAfterCold.offers,
+        coldDirectToolCalls: coldRun.directToolCalls,
+        warmDirectToolCalls: warmRun.directToolCalls,
+        coldSteps: coldRun.steps,
+        warmSteps: warmRun.steps,
+        coldWallMs: coldRun.wallMs,
+        warmWallMs: warmRun.wallMs,
+      };
+    }
+
     const outJson = join(opts.outDir, 'bench-results.json');
     writeFileSync(outJson, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
     console.log(`Wrote telemetry report to ${outJson}`);
@@ -457,7 +538,8 @@ async function main() {
 const isEntrypoint = (() => {
   try {
     return Boolean(process.argv[1]) && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
-  } catch {
+  } catch (err) {
+    if (process.argv[1]) console.error('[bench] entrypoint detection failed:', err?.message ?? err);
     return false;
   }
 })();
