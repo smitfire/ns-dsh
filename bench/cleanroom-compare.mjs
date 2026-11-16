@@ -1,22 +1,54 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, delimiter, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const AGY_BIN = process.env.AGY_BIN || join(homedir(), '.local', 'bin', 'agy');
-const DSH_BIN = process.env.DSH_BIN || join(homedir(), '.local', 'bin', 'dsh');
 const DSH_NATIVE_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
-const misePnpmDir = join(homedir(), '.local', 'share', 'mise', 'installs', 'pnpm', 'latest');
-const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR && existsSync(process.env.PNPM_BIN_DIR)
-  ? process.env.PNPM_BIN_DIR
-  : existsSync(misePnpmDir)
-    ? misePnpmDir
-    : '';
 const SAFE_PATCH_VAL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const USE_DARWIN_TIME = process.platform === 'darwin' && existsSync('/usr/bin/time');
+
+function resolvePnpmBinDir() {
+  const envPnpmDir = process.env.PNPM_BIN_DIR;
+  if (envPnpmDir) return existsSync(envPnpmDir) ? envPnpmDir : '';
+  const misePnpmDir = join(homedir(), '.local', 'share', 'mise', 'installs', 'pnpm', 'latest');
+  return existsSync(misePnpmDir) ? misePnpmDir : '';
+}
+
+function resolveStockDshBin() {
+  if (process.env.DSH_BIN) return process.env.DSH_BIN;
+  const binName = process.platform === 'win32' ? 'dsh.cmd' : 'dsh';
+  const nodeSibling = join(dirname(process.execPath), binName);
+  if (existsSync(nodeSibling)) return nodeSibling;
+  const localBin = join(ROOT_DIR, 'node_modules', '.bin', binName);
+  if (existsSync(localBin)) return localBin;
+  const userLocal = join(homedir(), '.local', 'bin', binName);
+  if (existsSync(userLocal)) {
+    try {
+      if (!realpathSync(userLocal).includes('workbench')) return userLocal;
+    } catch { /* ignore unreadable symlink */ }
+  }
+  return binName;
+}
+
+const PNPM_BIN_DIR = resolvePnpmBinDir();
+const DSH_BIN = resolveStockDshBin();
 
 function childEnv(extra = {}) {
   const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dirname(DSH_BIN)].filter(Boolean);
@@ -52,14 +84,31 @@ function parseMaxRssMb(timeStderr) {
 
 export function prepareCleanroomAgyHome() {
   const agyHome = mkdtempSync(join(tmpdir(), 'ns-agy-clean-'));
-  const authDir = join(agyHome, '.gemini', 'antigravity-cli', 'auth');
-  mkdirSync(authDir, { recursive: true, mode: 0o700 });
-  const srcAuth = join(homedir(), '.gemini', 'antigravity-cli', 'auth', 'jetski_state.pbtxt');
-  if (existsSync(srcAuth)) {
-    const dst = join(authDir, 'jetski_state.pbtxt');
-    copyFileSync(srcAuth, dst);
-    chmodSync(dst, 0o600);
+  const agyCliDir = join(agyHome, '.gemini', 'antigravity-cli');
+  const agyCacheDir = join(agyCliDir, 'cache');
+  const appSupportDir = join(agyHome, 'Library', 'Application Support', 'antigravity');
+  const libDir = join(agyHome, 'Library');
+  mkdirSync(agyCacheDir, { recursive: true, mode: 0o700 });
+  mkdirSync(appSupportDir, { recursive: true, mode: 0o700 });
+
+  const keychainsSrc = join(homedir(), 'Library', 'Keychains');
+  if (existsSync(keychainsSrc)) {
+    symlinkSync(keychainsSrc, join(libDir, 'Keychains'));
   }
+
+  const filesToCopy = [
+    { src: join(homedir(), '.gemini', 'antigravity-cli', 'jetski_state.pbtxt'), dst: join(agyCliDir, 'jetski_state.pbtxt'), mode: 0o600 },
+    { src: join(homedir(), '.gemini', 'antigravity-cli', 'cache', 'onboarding.json'), dst: join(agyCacheDir, 'onboarding.json'), mode: 0o600 },
+    { src: join(homedir(), '.gemini', 'antigravity-cli', 'cache', 'default_project_id.txt'), dst: join(agyCacheDir, 'default_project_id.txt'), mode: 0o600 },
+    { src: join(homedir(), 'Library', 'Application Support', 'antigravity', 'credential-user-scope'), dst: join(appSupportDir, 'credential-user-scope'), mode: 0o600 },
+  ];
+  for (const { src, dst, mode } of filesToCopy) {
+    if (existsSync(src)) {
+      copyFileSync(src, dst);
+      chmodSync(dst, mode);
+    }
+  }
+
   const env = childEnv({ HOME: agyHome });
   const pluginList = spawnSync(AGY_BIN, ['plugin', 'list'], { env, encoding: 'utf8', timeout: 20_000 });
   const mcpList = spawnSync(AGY_BIN, ['mcp', 'list'], { env, encoding: 'utf8', timeout: 20_000 });
@@ -71,6 +120,15 @@ export function prepareCleanroomAgyHome() {
     pluginListOutput: redactSecrets(pluginText),
     mcpListOutput: redactSecrets(mcpText),
   };
+}
+
+export function cleanupCleanroomAgyHome(agyHome) {
+  if (!agyHome) return;
+  try {
+    const kc = join(agyHome, 'Library', 'Keychains');
+    if (lstatSync(kc).isSymbolicLink()) unlinkSync(kc);
+  } catch { /* symlink absent */ }
+  rmSync(agyHome, { recursive: true, force: true });
 }
 
 export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flash-low' }) {
@@ -109,22 +167,37 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
   const stats = parsed?.stats ?? {};
   const models = stats.models ?? {};
   const firstModel = Object.values(models)[0] ?? {};
-  const tokens = firstModel.tokens ?? parsed?.usage ?? {};
+  const tokens = firstModel.tokens ?? {};
   const tools = stats.tools ?? {};
+  const u = parsed?.usage ?? tokens;
+  const inputTok = Number(u.input_tokens ?? u.input ?? u.prompt ?? parsed?.input_tokens ?? 0);
+  const cacheTok = Number(u.cache_read_tokens ?? u.cached ?? 0);
+  const agentTurnMs = typeof parsed?.duration_seconds === 'number'
+    ? Number((parsed.duration_seconds * 1000).toFixed(1))
+    : null;
+  const bootOverheadMs = typeof parsed?.duration_seconds === 'number'
+    ? Number(Math.max(0, wallMs - parsed.duration_seconds * 1000).toFixed(1))
+    : null;
   const redactedRawStats = parsed?.stats ? JSON.parse(redactSecrets(JSON.stringify(parsed.stats))) : null;
+  const errMsg = parsed?.error ? redactSecrets(String(parsed.error)) : '';
 
   return {
     harness: 'factory-default-agy',
     model,
     exitCode: res.status ?? 1,
     wallMs,
+    agentTurnMs,
+    bootOverheadMs,
     peakRssMb,
-    inputTokens: Number(tokens.input ?? tokens.prompt ?? parsed?.input_tokens ?? 0),
-    cachedInputTokens: Number(tokens.cached ?? 0),
-    outputTokens: Number(tokens.candidates ?? tokens.output ?? parsed?.output_tokens ?? 0),
-    thinkingTokens: Number(tokens.thoughts ?? 0),
+    turns: Number(parsed?.num_turns ?? 1),
+    inputTokens: inputTok,
+    uncachedInputTokens: Math.max(0, inputTok - cacheTok),
+    cachedInputTokens: cacheTok,
+    outputTokens: Number(u.output_tokens ?? u.candidates ?? u.output ?? parsed?.output_tokens ?? 0),
+    thinkingTokens: Number(u.thinking_tokens ?? u.thoughts ?? 0),
     toolCalls: Number(tools.totalCalls ?? parsed?.tool_calls ?? 0),
     responseText: redactSecrets(String(parsed?.response ?? parsed?.text ?? res.stdout ?? '').slice(0, 2000)),
+    ...(errMsg ? { errorMessage: errMsg } : {}),
     rawStats: redactedRawStats,
     stderrTail: redactSecrets((res.stderr || '').slice(-400)),
     ...(res.status === 0 && !parsed ? { parseWarning: 'agy stdout contained no JSON object' } : {}),
@@ -140,17 +213,35 @@ function assertSafePatchVal(name, val) {
 }
 
 function makeDshOverlayPatch({ provider, model, reasoningEffort = 'low', disableNsPlugins = false, ptcEnabled = false }) {
+  const safeProvider = assertSafePatchVal('provider', provider);
+  const safeModel = assertSafePatchVal('model', model);
+  const safeEffort = assertSafePatchVal('reasoningEffort', reasoningEffort);
   const lines = [
     '- id: credentials',
     '  disabled: false',
-    '- id: default-model',
-    '  config:',
-    `    provider: ${assertSafePatchVal('provider', provider)}`,
-    `    model: ${assertSafePatchVal('model', model)}`,
-    `    reasoningEffort: ${assertSafePatchVal('reasoningEffort', reasoningEffort)}`,
   ];
+  if (safeProvider === 'openai-codex') {
+    lines.push(
+      '- id: llm-pi-ai',
+      '  config:',
+      '    providers:',
+      '      openai-codex: {}',
+    );
+  }
+  lines.push(
+    '- id: agent-default-model',
+    '  config:',
+    `    provider: ${safeProvider}`,
+    `    model: ${safeModel}`,
+    `    reasoningEffort: ${safeEffort}`,
+  );
   if (ptcEnabled) {
-    lines.push('- id: tool-executor-ptc', '  disabled: false');
+    lines.push(
+      '- id: tool-executor-native',
+      '  disabled: true',
+      '- id: tool-executor-ptc',
+      '  disabled: false',
+    );
   }
   if (disableNsPlugins) {
     for (const id of ['ns-context', 'ns-codemode', 'ns-cuga', 'ns-board', 'ns-team', 'ns-flight-recorder']) {
@@ -167,25 +258,19 @@ export function prepareIsolatedBaselineDshHome() {
     copyFileSync(credSrc, join(dshHome, '.credentials.yaml'));
     chmodSync(join(dshHome, '.credentials.yaml'), 0o600);
   }
-  const profDir = join(dshHome, 'profiles', 'headless');
-  mkdirSync(join(profDir, 'node_modules'), { recursive: true });
-  writeFileSync(
-    join(profDir, 'package.json'),
-    JSON.stringify({
-      name: 'dsh-profile-headless',
-      private: true,
-      dependencies: { 'dsh-antigravity-auth': '0.1.10' },
-      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', 'dsh-antigravity-auth'] } },
-    }, null, 2),
-  );
-  const srcAgAuth = join(DSH_NATIVE_HOME, 'profiles', 'headless', 'node_modules', 'dsh-antigravity-auth');
-  if (existsSync(srcAgAuth)) {
-    symlinkSync(srcAgAuth, join(profDir, 'node_modules', 'dsh-antigravity-auth'));
+  const initRes = spawnSync(DSH_BIN, ['plugin', '--profile', 'headless', 'add', 'dsh-antigravity-auth@0.1.10'], {
+    env: childEnv({ DSH_HOME: dshHome }),
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  if (initRes.error || initRes.status !== 0) {
+    const detail = initRes.error ? initRes.error.message : (initRes.stderr || initRes.stdout || `exit=${initRes.status}`).trim();
+    throw new Error(`Failed initializing isolated baseline DSH profile: ${detail}`);
   }
   return dshHome;
 }
 
-export function runDshHeadless({
+async function runSingleDshAttempt({
   dshHome = DSH_NATIVE_HOME,
   cwd,
   prompt,
@@ -214,23 +299,87 @@ export function runDshHeadless({
     safePrompt,
   ];
   const started = performance.now();
-  const res = spawnSync(cmd, cmdArgs, {
-    cwd,
-    env: childEnv({ DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath }),
-    encoding: 'utf8',
-    timeout: 180_000,
-    maxBuffer: 10 * 1024 * 1024,
+  const { stdout, stderr, code, sawFinal, finalWallMs } = await new Promise((resolveRun) => {
+    const child = spawn(cmd, cmdArgs, {
+      cwd,
+      env: childEnv({ DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    let lineBuf = '';
+    let sawFinalEvent = false;
+    let recordedFinalWallMs = null;
+    let graceTimer = null;
+
+    const hardTimer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+    }, 180_000);
+
+    child.stdout.on('data', (chunk) => {
+      const s = chunk.toString('utf8');
+      if (out.length < 10 * 1024 * 1024) out += s;
+      lineBuf += s;
+      const parts = lineBuf.split(/\r?\n/u);
+      lineBuf = parts.pop() ?? '';
+      for (const raw of parts) {
+        const t = raw.trim();
+        if (!t.startsWith('{')) continue;
+        try {
+          const ev = JSON.parse(t);
+          if (ev.type === 'final' && !sawFinalEvent) {
+            sawFinalEvent = true;
+            recordedFinalWallMs = Number((performance.now() - started).toFixed(1));
+            graceTimer = setTimeout(() => {
+              try { child.kill('SIGTERM'); } catch { /* ignore */ }
+            }, 1500);
+          }
+        } catch { /* ignore */ }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const s = chunk.toString('utf8');
+      if (err.length < 2 * 1024 * 1024) err += s;
+    });
+
+    child.on('error', (spawnErr) => {
+      clearTimeout(hardTimer);
+      if (graceTimer) clearTimeout(graceTimer);
+      err += `\n${spawnErr.message}`;
+      resolveRun({
+        stdout: out,
+        stderr: err,
+        code: 1,
+        sawFinal: false,
+        finalWallMs: Number((performance.now() - started).toFixed(1)),
+      });
+    });
+
+    child.on('close', (exitCode) => {
+      clearTimeout(hardTimer);
+      if (graceTimer) clearTimeout(graceTimer);
+      resolveRun({
+        stdout: out,
+        stderr: err,
+        code: exitCode ?? 1,
+        sawFinal: sawFinalEvent,
+        finalWallMs: recordedFinalWallMs ?? Number((performance.now() - started).toFixed(1)),
+      });
+    });
   });
-  const wallMs = Number((performance.now() - started).toFixed(1));
-  const peakRssMb = parseMaxRssMb(res.stderr);
+
+  const wallMs = finalWallMs;
+  const peakRssMb = parseMaxRssMb(stderr);
 
   const events = [];
-  for (const line of (res.stdout || '').split(/\r?\n/u)) {
+  for (const line of stdout.split(/\r?\n/u)) {
     const t = line.trim();
     if (!t.startsWith('{')) continue;
     try { events.push(JSON.parse(t)); } catch { /* ignore */ }
   }
 
+  let emittedSessionId = '';
   let inputTokens = 0;
   let uncachedInputTokens = 0;
   let cachedInputTokens = 0;
@@ -243,10 +392,14 @@ export function runDshHeadless({
   let step1PromptTokens = null;
   const contextCurve = [];
   let finalText = '';
+  let errorMessage = '';
 
   for (const ev of events) {
-    if (ev.type === 'step/end' || ev.type === 'turn/end' || ev.type === 'assistant/message') {
-      const u = ev.data?.usage ?? ev.usage;
+    if (ev.type === 'session' && typeof ev.sessionId === 'string') {
+      emittedSessionId = ev.sessionId;
+    }
+    if ((ev.type === 'status' && ev.phase === 'step_end') || ev.type === 'step/end' || ev.type === 'turn/end' || ev.type === 'assistant/message') {
+      const u = ev.usage ?? ev.data?.usage;
       if (u && typeof u === 'object') {
         const uncachedIn = Number(u.inputTokens ?? u.input_tokens ?? 0);
         const cacheRead = Number(u.cacheReadTokens ?? u.cachedInputTokens ?? u.cache_read_input_tokens ?? 0);
@@ -264,14 +417,23 @@ export function runDshHeadless({
         thinkingTokens += Number(u.reasoningTokens ?? u.thinkingTokens ?? 0);
       }
     }
-    if (ev.type === 'step/start') steps += 1;
-    if (ev.type === 'tool/call') directToolCalls += 1;
+    if ((ev.type === 'status' && ev.phase === 'step_start') || ev.type === 'step/start') steps += 1;
+    if (ev.type === 'tool_call' || ev.type === 'tool/call') directToolCalls += 1;
     if (ev.type === 'tool/ptc-dispatch') ptcToolCalls += 1;
-    if (ev.type === 'assistant/message' && Array.isArray(ev.data?.content)) {
+    if (ev.type === 'final') {
+      if (typeof ev.text === 'string' && ev.text) finalText = ev.text;
+      if (ev.reason?.kind === 'error') {
+        errorMessage = String(ev.reason?.error?.message ?? 'dsh final error');
+      }
+    } else if (ev.type === 'error' && typeof ev.message === 'string') {
+      errorMessage = ev.message;
+    } else if (ev.type === 'text' && typeof ev.text === 'string' && ev.text && !finalText) {
+      finalText = ev.text;
+    } else if (ev.type === 'assistant/message' && Array.isArray(ev.data?.content)) {
       const txt = ev.data.content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n');
       if (txt) finalText = txt;
     }
-    if (typeof ev.result === 'string' && ev.result) finalText = ev.result;
+    if (typeof ev.result === 'string' && ev.result && ev.type !== 'tool_result') finalText = ev.result;
   }
 
   let flightTelemetry = null;
@@ -280,18 +442,25 @@ export function runDshHeadless({
       const lines = readFileSync(telemetryPath, 'utf8').trim().split(/\r?\n/u).filter(Boolean);
       const parsed = lines.length > 0 ? JSON.parse(lines[lines.length - 1]) : null;
       const rows = Array.isArray(parsed?.telemetry) ? parsed.telemetry : [];
-      flightTelemetry = rows.find((r) => Number(r?.steps ?? 0) > 0) ?? rows[0] ?? null;
+      flightTelemetry =
+        (emittedSessionId ? rows.find((r) => r.sessionId === emittedSessionId) : undefined) ??
+        rows.find((r) => Number(r?.steps ?? 0) > 0) ??
+        rows[0] ??
+        null;
     } catch { /* ignore */ }
     rmSync(telemetryPath, { force: true });
   }
   rmSync(patchFile, { force: true });
+
+  const resolvedExitCode = sawFinal && !errorMessage ? 0 : code;
+  const cleanErr = errorMessage ? redactSecrets(errorMessage) : '';
 
   return {
     harness: label,
     provider,
     model,
     reasoningEffort,
-    exitCode: res.status ?? 1,
+    exitCode: resolvedExitCode,
     wallMs,
     bootMs: flightTelemetry?.bootMs ?? null,
     ttfrMs: flightTelemetry?.ttfrMs ?? null,
@@ -312,8 +481,19 @@ export function runDshHeadless({
     thinkingTokens: flightTelemetry?.thinkingTokens ?? thinkingTokens,
     outputTokens: flightTelemetry?.outputTokens ?? outputTokens,
     responseText: redactSecrets(finalText.slice(0, 2000)),
-    stderrTail: redactSecrets((res.stderr || '').slice(-400)),
+    ...(cleanErr ? { errorMessage: cleanErr } : {}),
+    stderrTail: redactSecrets(stderr.slice(-400)),
   };
+}
+
+export async function runDshHeadless(opts) {
+  const first = await runSingleDshAttempt(opts);
+  if (first.exitCode !== 0 && /RATE_LIMIT|429|RESOURCE_EXHAUSTED/i.test(first.errorMessage || '')) {
+    await new Promise((r) => setTimeout(r, 4500));
+    const second = await runSingleDshAttempt(opts);
+    return { ...second, retriedRateLimit: true };
+  }
+  return first;
 }
 
 function createTaskRepo(prefix, files) {
@@ -412,15 +592,15 @@ async function main() {
       report.runs.push({ task: 'T1', ...runAgyCleanroom({ agyHome: cleanAgy.agyHome, cwd: agyRepo, prompt }) });
       report.runs.push({
         task: 'T1',
-        ...runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-gemini' }),
+        ...(await runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-gemini' })),
       });
       report.runs.push({
         task: 'T1',
-        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepoGemini, prompt, label: 'ns-dsh-gemini' }),
+        ...(await runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepoGemini, prompt, label: 'ns-dsh-gemini' })),
       });
       report.runs.push({
         task: 'T1',
-        ...runDshHeadless({
+        ...(await runDshHeadless({
           dshHome: DSH_NATIVE_HOME,
           cwd: nsRepoOpenAi,
           prompt,
@@ -428,7 +608,7 @@ async function main() {
           model: 'gpt-6-luna',
           reasoningEffort: 'low',
           label: 'ns-dsh-openai',
-        }),
+        })),
       });
     }
 
@@ -450,11 +630,11 @@ async function main() {
       report.runs.push({ task: 'T2', ...runAgyCleanroom({ agyHome: cleanAgy.agyHome, cwd: agyRepo, prompt }) });
       report.runs.push({
         task: 'T2',
-        ...runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-gemini' }),
+        ...(await runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-gemini' })),
       });
       report.runs.push({
         task: 'T2',
-        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepo, prompt, ptcEnabled: true, label: 'ns-dsh-ptc-fts5-gemini' }),
+        ...(await runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepo, prompt, ptcEnabled: true, label: 'ns-dsh-ptc-fts5-gemini' })),
       });
     }
 
@@ -469,11 +649,11 @@ async function main() {
       const nsRepo = track(createTaskRepo('ns-t3-ns-', files));
       report.runs.push({
         task: 'T3',
-        ...runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-no-cuga' }),
+        ...(await runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-no-cuga' })),
       });
       report.runs.push({
         task: 'T3',
-        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepo, prompt, label: 'ns-dsh-cuga-guarded' }),
+        ...(await runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepo, prompt, label: 'ns-dsh-cuga-guarded' })),
       });
     }
 
@@ -490,32 +670,34 @@ async function main() {
       report.runs.push({ task: 'T4', ...runAgyCleanroom({ agyHome: cleanAgy.agyHome, cwd: agyRepo, prompt }) });
       report.runs.push({
         task: 'T4',
-        ...runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-static-flash' }),
+        ...(await runDshHeadless({ dshHome: factoryDshHome, cwd: dshRepo, prompt, label: 'factory-default-dsh-static-flash' })),
       });
       report.runs.push({
         task: 'T4',
-        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepo, prompt, label: 'ns-dsh-switchyard-stage' }),
+        ...(await runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: nsRepo, prompt, label: 'ns-dsh-switchyard-stage' })),
       });
     }
 
     if (opts.tasks.includes('T5')) {
       const files = {
         'package.json': JSON.stringify({ name: 't5-cuga-reuse' }),
-        'src/gateway.ts': 'import { DOWNSTREAM_BUDGET_MS } from "./timeout-policy.js";\nexport const INGRESS_TIMEOUT_MS = 4500;\nexport function checkBudget() { return INGRESS_TIMEOUT_MS - DOWNSTREAM_BUDGET_MS; }\n',
-        'src/timeout-policy.ts': 'export const DOWNSTREAM_BUDGET_MS = 3200;\nexport const RETRY_BACKOFF_MS = 250;\n',
-        'src/downstream.ts': 'import { RETRY_BACKOFF_MS } from "./timeout-policy.js";\nexport function safetyMargin(raw) { return raw - RETRY_BACKOFF_MS; }\n',
+        'src/api/routes.ts': 'export const API_PREFIX = "/v1";\n',
+        'src/auth/jwt.ts': 'export const JWT_ALG = "HS256";\n',
+        'src/db/pool.ts': 'export const MAX_CONNS = 12;\n',
+        'src/metrics/exporter.ts': 'export const METRICS_PORT = 9102;\n',
+        'src/ops/net/gateway.ts': 'import { DOWNSTREAM_BUDGET_MS } from "../../core/limits/timeout-policy.js";\nexport const INGRESS_TIMEOUT_MS = 4500;\nexport function checkBudget() { return INGRESS_TIMEOUT_MS - DOWNSTREAM_BUDGET_MS; }\n',
+        'src/core/limits/timeout-policy.ts': 'export const DOWNSTREAM_BUDGET_MS = 3200;\nexport const RETRY_BACKOFF_MS = 250;\n',
       };
       const t5Repo = track(createTaskRepo('ns-t5-cuga-', files));
-      const coldPrompt = 'Read src/gateway.ts, src/timeout-policy.ts, and src/downstream.ts individually using your file read tool, then compute the exact remaining safety margin in ms (INGRESS_TIMEOUT_MS - DOWNSTREAM_BUDGET_MS - RETRY_BACKOFF_MS). Reply concisely with the equation and result.';
+      const t5Prompt = 'Locate where INGRESS_TIMEOUT_MS and DOWNSTREAM_BUDGET_MS are defined in this repository and compute INGRESS_TIMEOUT_MS - DOWNSTREAM_BUDGET_MS. Reply concisely with both values and their difference.';
       const coldRun = {
         task: 'T5',
-        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: t5Repo, prompt: coldPrompt, label: 'ns-dsh-cuga-cold' }),
+        ...(await runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: t5Repo, prompt: t5Prompt, label: 'ns-dsh-cuga-cold' })),
       };
       const forewispAfterCold = await inspectForewispStats(t5Repo);
-      const warmPrompt = 'What are the exact numeric values of INGRESS_TIMEOUT_MS, DOWNSTREAM_BUDGET_MS, RETRY_BACKOFF_MS, and the resulting safety margin in ms? Reply concisely.';
       const warmRun = {
         task: 'T5',
-        ...runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: t5Repo, prompt: warmPrompt, label: 'ns-dsh-cuga-warm' }),
+        ...(await runDshHeadless({ dshHome: DSH_NATIVE_HOME, cwd: t5Repo, prompt: t5Prompt, label: 'ns-dsh-cuga-warm' })),
       };
       report.runs.push(coldRun, warmRun);
       report.t5CugaReuse = {
@@ -535,7 +717,7 @@ async function main() {
     console.log(`Wrote telemetry report to ${outJson}`);
   } finally {
     for (const d of tempRepos) rmSync(d, { recursive: true, force: true });
-    rmSync(cleanAgy.agyHome, { recursive: true, force: true });
+    cleanupCleanroomAgyHome(cleanAgy.agyHome);
     rmSync(factoryDshHome, { recursive: true, force: true });
   }
 }

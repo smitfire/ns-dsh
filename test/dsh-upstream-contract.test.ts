@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
@@ -146,4 +147,16 @@ test('Canary dry-run validates all 5 plugins and Switchyard config generator sta
   const toml = generateSwitchyardRoutesToml();
   assert.match(toml, /\[router\]/);
   assert.match(toml, /strategy = "stage_router"/);
+});
+
+test('ns-dsh CLI resolves stock DSH binary and never selects agent-workbench wrapper', () => {
+  const out = execFileSync(process.execPath, [join(ROOT, 'bin', 'ns-dsh.mjs'), 'status'], {
+    encoding: 'utf8',
+    env: { ...process.env, DSH_BIN: '' },
+  });
+  const parsed = JSON.parse(out) as { dshBinary: string };
+  assert.ok(parsed.dshBinary);
+  if (existsSync(parsed.dshBinary)) {
+    assert.equal(realpathSync(parsed.dshBinary).includes('workbench'), false, `Resolved ${parsed.dshBinary}`);
+  }
 });

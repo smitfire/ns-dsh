@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,17 +8,34 @@ import { generateSwitchyardRoutesToml } from '../plugins/team/dist/core/index.js
 import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary } from '../dist/upgrade/canary.js';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const DSH_BIN = process.env.DSH_BIN || join(homedir(), '.local', 'bin', 'dsh');
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
 const misePnpmDir = join(homedir(), '.local', 'share', 'mise', 'installs', 'pnpm', 'latest');
 const PNPM_BIN_DIR = process.env.PNPM_BIN_DIR || (existsSync(misePnpmDir) ? misePnpmDir : '');
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
+function resolveStockDshBin() {
+  if (process.env.DSH_BIN) return process.env.DSH_BIN;
+  const binName = process.platform === 'win32' ? 'dsh.cmd' : 'dsh';
+  const nodeSibling = join(dirname(process.execPath), binName);
+  if (existsSync(nodeSibling)) return nodeSibling;
+  const localBin = join(ROOT_DIR, 'node_modules', '.bin', binName);
+  if (existsSync(localBin)) return localBin;
+  const userLocal = join(homedir(), '.local', 'bin', binName);
+  if (existsSync(userLocal)) {
+    try {
+      if (!realpathSync(userLocal).includes('workbench')) return userLocal;
+    } catch { /* ignore unreadable symlink */ }
+  }
+  return binName;
+}
+
+const DSH_BIN = resolveStockDshBin();
+
 function childEnv(extra = {}) {
   const priorityDirs = [dirname(process.execPath), PNPM_BIN_DIR, dirname(DSH_BIN)].filter(Boolean);
   const existing = (process.env.PATH || '').split(delimiter).filter(Boolean);
   const merged = [...new Set([...priorityDirs, ...existing])].join(delimiter);
-  return { ...process.env, ...extra, PATH: merged };
+  return { ...process.env, DSH_HOME, ...extra, PATH: merged };
 }
 
 function resolveDshVersion(dshVer) {
@@ -165,8 +182,9 @@ function cmdUpgrade(args) {
           env: childEnv(),
           stdio: 'inherit',
         });
-        if (restoreDsh.status !== 0) {
-          console.error(`Could not auto-restore @deepseek-ai/dsh@${upgradedGlobalFrom}; run: npm install -g @deepseek-ai/dsh@${upgradedGlobalFrom}`);
+        if (restoreDsh.error || restoreDsh.status !== 0) {
+          const errDetail = restoreDsh.error ? restoreDsh.error.message : `exit=${restoreDsh.status}`;
+          console.error(`Could not auto-restore @deepseek-ai/dsh@${upgradedGlobalFrom} (${errDetail}); run: npm install -g @deepseek-ai/dsh@${upgradedGlobalFrom}`);
         }
       }
       process.exit(res.status ?? 1);
