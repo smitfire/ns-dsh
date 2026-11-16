@@ -1,0 +1,54 @@
+{
+  "verifiedAt": "2026-11-16T15:19:23.024Z",
+  "webUiUrl": "http://127.0.0.1:7430",
+  "endpoints": {
+    "unauthenticatedHomeStatus": 401,
+    "authenticatedHomeStatus": 303,
+    "stateStatus": 200,
+    "sseStatus": 200,
+    "sseContentType": "text/event-stream; charset=utf-8",
+    "csrfOrigin403Status": 403,
+    "blockedMoveStatus": 400,
+    "blockedMoveReason": "blocked_by_dependencies"
+  },
+  "h4SeededSubtleBugGate": {
+    "cardAuthId": "card-auth-mwjesgtn",
+    "cardApiId": "card-api-mwjesgtn",
+    "buggyCommit": {
+      "snapshotPassed": true,
+      "ocrRan": true,
+      "ocrBlockingCount": 2,
+      "ocrTotalFindings": 2,
+      "openAiReviewerFindingsCount": 1,
+      "openAiReviewerFindings": [
+        "`token.startsWith(secret)` accepts any token with the secret as a prefix, so an attacker can append arbitrary characters and still authenticate. Use full equality."
+      ],
+      "openAiReviewerWallMs": 3817.8,
+      "gatePassed": false,
+      "finalColumn": "review",
+      "blockingReasons": [
+        "OCR found 2 critical/high finding(s)",
+        "cross-family reviewer (openai-codex): `token.startsWith(secret)` accepts any token with the secret as a prefix, so an attacker can append arbitrary characters and still authenticate. Use full equality."
+      ]
+    },
+    "fixedCommit": {
+      "snapshotPassed": true,
+      "ocrRan": true,
+      "ocrBlockingCount": 0,
+      "ocrTotalFindings": 0,
+      "openAiReviewerFindingsCount": 0,
+      "openAiReviewerResponse": "APPROVED",
+      "openAiReviewerWallMs": 2526.3,
+      "gatePassed": true,
+      "finalColumn": "done"
+    },
+    "httpDagUnlock": {
+      "moveDoneStatus": 200,
+      "unblockedIds": [
+        "card-api-mwjesgtn"
+      ],
+      "cardAuthFinalColumn": "done",
+      "cardApiFinalColumn": "ready"
+    }
+  }
+}
