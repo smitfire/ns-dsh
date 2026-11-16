@@ -1,0 +1,15 @@
+[submodule "plugins/context"]
+	path = plugins/context
+	url = https://github.com/smitfire/context.git
+[submodule "plugins/codemode"]
+	path = plugins/codemode
+	url = https://github.com/smitfire/codemode.git
+[submodule "plugins/cuga"]
+	path = plugins/cuga
+	url = https://github.com/smitfire/cuga.git
+[submodule "plugins/board"]
+	path = plugins/board
+	url = https://github.com/smitfire/board.git
+[submodule "plugins/team"]
+	path = plugins/team
+	url = https://github.com/smitfire/team.git

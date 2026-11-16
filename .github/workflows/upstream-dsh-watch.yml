@@ -1,0 +1,29 @@
+name: Upstream DSH Canary Watch
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Target @deepseek-ai/dsh version to test'
+        required: false
+        default: 'latest'
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run ns-dsh unit & contract tests
+        run: npm test
+      - name: Run upgrade canary dry-run
+        run: node bin/ns-dsh.mjs upgrade --dry-run

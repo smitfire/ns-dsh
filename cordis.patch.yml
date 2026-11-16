@@ -1,0 +1,9 @@
+- id: credentials
+  disabled: false
+
+- id: tool-agent-team
+  disabled: true
+
+- insert:
+    - id: ns-flight-recorder
+      name: '@smitfire/ns-dsh'
