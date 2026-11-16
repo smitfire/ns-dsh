@@ -2,6 +2,7 @@ node_modules/
 *.tsbuildinfo
 .DS_Store
 .forewisp/
+.ns-dsh/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
