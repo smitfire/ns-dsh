@@ -15,19 +15,29 @@ function printUsage() {
   console.log(`Usage: ns-dsh <command> [options]
 
 Commands:
-  status                          Show installed DSH version and workspace plugin versions
+  status                              Show installed DSH version and workspace plugin versions
   install [--profile <web|headless>]  Install ns-dsh + 5 child plugins into DSH profile(s)
   upgrade [--target <ver>] [--dry-run] [--profile <name>]
-                                  Run canary verification before upgrading DSH profile
-  rollback [--profile <name>]     Restore profile package.json & cordis.patch.yml backup
+                                      Run canary verification before updating DSH / profile
+  rollback [--profile <name>]         Restore profile package.json & cordis.patch.yml backup
   init [--agy|--claude|--cursor|--switchyard] [--out <dir>]
-                                  Export harness-agnostic MCP config or Switchyard routes.toml
-  compare [args...]               Run 3-way cleanroom comparison harness (bench/cleanroom-compare.mjs)
+                                      Export harness-agnostic MCP config or Switchyard routes.toml
+  compare [args...]                   Run 3-way cleanroom comparison harness (bench/cleanroom-compare.mjs)
 `);
 }
 
 function resolveProfileDir(profile) {
   return join(DSH_HOME, 'profiles', profile);
+}
+
+function flagValue(args, flag) {
+  const idx = args.indexOf(flag);
+  if (idx < 0) return undefined;
+  const next = args[idx + 1];
+  if (!next || next.startsWith('-')) {
+    throw new Error(`flag ${flag} requires a value`);
+  }
+  return next;
 }
 
 function cmdStatus() {
@@ -41,14 +51,14 @@ function cmdStatus() {
     name: pkg.name,
     version: pkg.version,
     dshBinary: DSH_BIN,
-    dshVersion: dshVer.status === 0 ? dshVer.stdout.trim() : 'unavailable',
+    dshVersion: dshVer.error ? `unavailable (${dshVer.error.message})` : dshVer.status === 0 ? dshVer.stdout.trim() : `exit=${dshVer.status}`,
     plugins,
   }, null, 2));
 }
 
 function cmdInstall(args) {
-  const idx = args.indexOf('--profile');
-  const profiles = idx >= 0 && args[idx + 1] ? [args[idx + 1]] : ['headless', 'web'];
+  const explicitProfile = flagValue(args, '--profile');
+  const profiles = explicitProfile ? [explicitProfile] : ['headless', 'web'];
   const pkgPaths = [
     join(ROOT_DIR, 'plugins', 'context'),
     join(ROOT_DIR, 'plugins', 'codemode'),
@@ -62,10 +72,10 @@ function cmdInstall(args) {
     if (existsSync(dir)) backupProfileConfig(dir);
     const res = spawnSync(DSH_BIN, ['plugin', '--profile', profile, 'add', ...pkgPaths], {
       stdio: 'inherit',
-      encoding: 'utf8',
     });
-    if (res.status !== 0) {
-      console.error(`Failed installing into DSH profile "${profile}" (exit=${res.status})`);
+    if (res.error || res.status !== 0) {
+      console.error(`Failed installing into DSH profile "${profile}" (${res.error ? res.error.message : `exit=${res.status}`}). Restoring backup if present.`);
+      if (existsSync(dir)) rollbackProfileConfig(dir);
       process.exit(res.status ?? 1);
     }
   }
@@ -73,26 +83,30 @@ function cmdInstall(args) {
 
 function cmdUpgrade(args) {
   const dryRun = args.includes('--dry-run');
-  const tIdx = args.indexOf('--target');
-  const targetDshVersion = tIdx >= 0 ? args[tIdx + 1] : undefined;
-  const canary = runUpgradeCanary({ workspaceRoot: ROOT_DIR, targetDshVersion, dryRun });
+  const rawTarget = flagValue(args, '--target');
+  const targetDshVersion = rawTarget && rawTarget !== 'latest' ? rawTarget : undefined;
+  const canary = runUpgradeCanary({ workspaceRoot: ROOT_DIR, targetDshVersion, dryRun, runUnitTests: !dryRun });
   console.log(JSON.stringify(canary, null, 2));
   if (!canary.ok) {
     console.error('Canary verification FAILED; aborting upgrade before modifying ~/.dsh.');
     process.exit(1);
   }
   if (!dryRun) {
-    const pIdx = args.indexOf('--profile');
-    const profile = pIdx >= 0 && args[pIdx + 1] ? args[pIdx + 1] : 'web';
+    const profile = flagValue(args, '--profile') || 'web';
     const dir = resolveProfileDir(profile);
     if (existsSync(dir)) backupProfileConfig(dir);
-    console.log(`Backed up profile "${profile}". Target @deepseek-ai/dsh@${canary.targetDshVersion} cleared canary.`);
+    const res = spawnSync(DSH_BIN, ['plugin', '--profile', profile, 'update'], { stdio: 'inherit' });
+    if (res.error || res.status !== 0) {
+      console.error(`Upgrade update failed (${res.error ? res.error.message : `exit=${res.status}`}); restoring backup.`);
+      if (existsSync(dir)) rollbackProfileConfig(dir);
+      process.exit(res.status ?? 1);
+    }
   }
 }
 
 function cmdRollback(args) {
-  const pIdx = args.indexOf('--profile');
-  const profiles = pIdx >= 0 && args[pIdx + 1] ? [args[pIdx + 1]] : ['headless', 'web'];
+  const explicitProfile = flagValue(args, '--profile');
+  const profiles = explicitProfile ? [explicitProfile] : ['headless', 'web'];
   for (const profile of profiles) {
     const ok = rollbackProfileConfig(resolveProfileDir(profile));
     console.log(`Rollback profile "${profile}": ${ok ? 'restored backup' : 'no backup found'}`);
@@ -100,8 +114,7 @@ function cmdRollback(args) {
 }
 
 function cmdInit(args) {
-  const outIdx = args.indexOf('--out');
-  const outDir = resolve(outIdx >= 0 && args[outIdx + 1] ? args[outIdx + 1] : process.cwd());
+  const outDir = resolve(flagValue(args, '--out') || process.cwd());
   mkdirSync(outDir, { recursive: true });
   const mcpConfig = {
     mcpServers: {

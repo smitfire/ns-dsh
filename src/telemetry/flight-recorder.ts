@@ -115,22 +115,35 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
 
   const flushToDisk = (targetPath = outFile): string | null => {
     if (!targetPath) return null;
-    const abs = resolve(targetPath);
-    mkdirSync(dirname(abs), { recursive: true });
-    const rows = [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
-    if (rows.length === 0) return null;
-    appendFileSync(abs, `${JSON.stringify({ timestamp: Date.now(), telemetry: rows })}\n`, 'utf8');
-    return abs;
+    try {
+      const abs = resolve(targetPath);
+      mkdirSync(dirname(abs), { recursive: true });
+      const rows = [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
+      if (rows.length === 0) return null;
+      appendFileSync(abs, `${JSON.stringify({ timestamp: Date.now(), telemetry: rows })}\n`, 'utf8');
+      return abs;
+    } catch {
+      return null;
+    }
   };
 
   ctx.provide('nsFlightRecorder', {
     bootStartedAt: applyStart,
     bootMs,
     snapshot: (sessionId?: string) => {
-      if (sessionId) return syncDerivedMetrics({ ...ensure(sessionId) });
+      if (sessionId) {
+        const existing = sessions.get(sessionId);
+        return syncDerivedMetrics({ ...(existing ?? ensure(sessionId)) });
+      }
       return [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
     },
     flushToDisk,
+  });
+
+  ctx.on('agent/disposed', ({ agent }) => {
+    const sid = String(agent.session.id);
+    turnStartTimes.delete(sid);
+    if (sessions.size > 256) sessions.delete(sid);
   });
 
   ctx.on('agent/pre-step', async (payload, next) => {

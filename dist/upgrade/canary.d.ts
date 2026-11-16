@@ -2,7 +2,7 @@ export interface CanaryPluginCheck {
     plugin: string;
     engineRange: string;
     compatible: boolean;
-    testsPassed: boolean;
+    typecheckPassed: boolean;
     durationMs: number;
     error?: string;
 }
@@ -20,6 +20,7 @@ export declare function runUpgradeCanary(opts: {
     workspaceRoot: string;
     targetDshVersion?: string;
     dryRun?: boolean;
+    runUnitTests?: boolean;
 }): UpgradeCanaryResult;
 export declare function cleanTempBackup(dir: string): void;
 export declare function writeJsonAtomicReport(path: string, data: unknown): void;

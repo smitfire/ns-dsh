@@ -58,23 +58,36 @@ export function apply(ctx, rawConfig = {}) {
     const flushToDisk = (targetPath = outFile) => {
         if (!targetPath)
             return null;
-        const abs = resolve(targetPath);
-        mkdirSync(dirname(abs), { recursive: true });
-        const rows = [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
-        if (rows.length === 0)
+        try {
+            const abs = resolve(targetPath);
+            mkdirSync(dirname(abs), { recursive: true });
+            const rows = [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
+            if (rows.length === 0)
+                return null;
+            appendFileSync(abs, `${JSON.stringify({ timestamp: Date.now(), telemetry: rows })}\n`, 'utf8');
+            return abs;
+        }
+        catch {
             return null;
-        appendFileSync(abs, `${JSON.stringify({ timestamp: Date.now(), telemetry: rows })}\n`, 'utf8');
-        return abs;
+        }
     };
     ctx.provide('nsFlightRecorder', {
         bootStartedAt: applyStart,
         bootMs,
         snapshot: (sessionId) => {
-            if (sessionId)
-                return syncDerivedMetrics({ ...ensure(sessionId) });
+            if (sessionId) {
+                const existing = sessions.get(sessionId);
+                return syncDerivedMetrics({ ...(existing ?? ensure(sessionId)) });
+            }
             return [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
         },
         flushToDisk,
+    });
+    ctx.on('agent/disposed', ({ agent }) => {
+        const sid = String(agent.session.id);
+        turnStartTimes.delete(sid);
+        if (sessions.size > 256)
+            sessions.delete(sid);
     });
     ctx.on('agent/pre-step', async (payload, next) => {
         const sid = String(payload.agent.session.id);
