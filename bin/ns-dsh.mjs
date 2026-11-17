@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateSwitchyardRoutesToml } from '../plugins/team/dist/core/index.js';
-import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary } from '../dist/upgrade/canary.js';
+import { backupProfileConfig, rollbackProfileConfig, runUpgradeCanary, WORKSPACE_PLUGINS } from '../dist/upgrade/canary.js';
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -58,7 +58,7 @@ function printUsage() {
 
 Commands:
   status                              Show installed DSH version and workspace plugin versions
-  install [--profile <web|headless>]  Install ns-dsh + 5 child plugins into DSH profile(s)
+  install [--profile <web|headless>]  Install ns-dsh + ${WORKSPACE_PLUGINS.length} child plugins into DSH profile(s)
   upgrade [--target <ver>] [--dry-run] [--profile <name>]
                                       Run canary verification before updating DSH / profile
   rollback [--profile <name>]         Restore profile package.json & cordis.patch.yml backup
@@ -85,7 +85,7 @@ function flagValue(args, flag) {
 function cmdStatus() {
   const pkg = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8'));
   const dshVer = spawnSync(DSH_BIN, ['--version'], { env: childEnv(), encoding: 'utf8' });
-  const plugins = ['context', 'codemode', 'cuga', 'board', 'team'].map((p) => {
+  const plugins = WORKSPACE_PLUGINS.map((p) => {
     const subPkg = JSON.parse(readFileSync(join(ROOT_DIR, 'plugins', p, 'package.json'), 'utf8'));
     return { name: subPkg.name, version: subPkg.version, engines: subPkg.engines };
   });
@@ -114,11 +114,7 @@ function cmdInstall(args) {
   const explicitProfile = flagValue(args, '--profile');
   const profiles = explicitProfile ? [explicitProfile] : ['headless', 'web'];
   const pkgPaths = [
-    join(ROOT_DIR, 'plugins', 'context'),
-    join(ROOT_DIR, 'plugins', 'codemode'),
-    join(ROOT_DIR, 'plugins', 'cuga'),
-    join(ROOT_DIR, 'plugins', 'board'),
-    join(ROOT_DIR, 'plugins', 'team'),
+    ...WORKSPACE_PLUGINS.map((p) => join(ROOT_DIR, 'plugins', p)),
     ROOT_DIR,
   ];
   const installed = [];
@@ -214,13 +210,12 @@ function cmdInit(args) {
   const outDir = resolve(flagValue(args, '--out') || process.cwd());
   mkdirSync(outDir, { recursive: true });
   const mcpConfig = {
-    mcpServers: {
-      'ns-context': { command: 'node', args: [join(ROOT_DIR, 'plugins/context/dist/mcp/server.js')] },
-      'ns-codemode': { command: 'node', args: [join(ROOT_DIR, 'plugins/codemode/dist/mcp/server.js')] },
-      'ns-cuga': { command: 'node', args: [join(ROOT_DIR, 'plugins/cuga/dist/mcp/server.js')] },
-      'ns-board': { command: 'node', args: [join(ROOT_DIR, 'plugins/board/dist/mcp/server.js')] },
-      'ns-team': { command: 'node', args: [join(ROOT_DIR, 'plugins/team/dist/mcp/server.js')] },
-    },
+    mcpServers: Object.fromEntries(
+      WORKSPACE_PLUGINS.filter((p) => existsSync(join(ROOT_DIR, 'plugins', p, 'dist', 'mcp', 'server.js'))).map((p) => [
+        `ns-${p}`,
+        { command: 'node', args: [join(ROOT_DIR, 'plugins', p, 'dist/mcp/server.js')] },
+      ]),
+    ),
   };
 
   const wrote = [];

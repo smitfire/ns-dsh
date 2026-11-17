@@ -1,3 +1,4 @@
+# Workspace lockfile pnpm-lock.yaml includes all 6 plugins/* importers (excluded from OCR diff via OCR_EXCLUDE).
 [submodule "plugins/context"]
 	path = plugins/context
 	url = https://github.com/smitfire/context.git
@@ -13,3 +14,6 @@
 [submodule "plugins/team"]
 	path = plugins/team
 	url = https://github.com/smitfire/team.git
+[submodule "plugins/tui"]
+	path = plugins/tui
+	url = https://github.com/smitfire/tui.git
