@@ -10,8 +10,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import CommandsService from '@deepseek-ai/dsh-commands';
+import LlmService, { LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm';
 import SystemPrompt, { renderContextSnapshot } from '@deepseek-ai/dsh-system-prompt';
 import ToolsService from '@deepseek-ai/dsh-tools';
+import * as flightRecorder from '../dist/telemetry/flight-recorder.js';
 
 import {
   ForewispBridge,
@@ -1475,6 +1477,241 @@ process.on('SIGTERM', () => srv.close(() => process.exit(0)));
     for (const f of fibers.reverse()) await f.dispose();
     fwServer.close();
     fwServer.closeAllConnections?.();
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyard per-card tiering, quota failover, and FlightRecorder telemetry', async () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'ns-orch-int-'));
+  const telemetryOut = join(workDir, 'telemetry.jsonl');
+  const ctx = new Context();
+  await ctx.plugin(SystemPrompt);
+  await ctx.plugin(ToolsService);
+  ctx.tools.setExecutor({
+    describe: () => ({ schemas: [], knownNames: [] }),
+    execute: async () => [],
+  } as never);
+  await ctx.plugin(CommandsService);
+  await ctx.plugin(LlmService);
+  ctx.provide('sessions', {});
+
+  class DummyLlmAdapter extends LlmAdapter {
+    async *stream(): AsyncIterable<StreamChunk> {
+      yield { type: 'usage', usage: { inputTokens: 120, cacheReadTokens: 80, outputTokens: 45, reasoningTokens: 10 } };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    }
+  }
+  ctx.llm.registerAdapter(['google-antigravity', 'openai-codex'], new DummyLlmAdapter());
+
+  const selects: Array<{ provider?: string; model?: string; reasoningEffort?: string }> = [];
+  let currentModel = { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash', reasoningEffort: 'low' };
+  const rootAgent = {
+    id: 'orch-int-1',
+    status: 'idle',
+    options: { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash' },
+    session: { id: 'orch-int-1', header: { cwd: workDir }, meta: { cwd: workDir }, append: () => 1 },
+    model: {
+      current: () => currentModel,
+      select: (next: { provider: string; model: string; reasoningEffort?: string }) => {
+        currentModel = { provider: next.provider, model: next.model, reasoningEffort: next.reasoningEffort ?? 'low' };
+        selects.push(next);
+      },
+    },
+    followup: () => {},
+    cancel: () => {},
+  } as never;
+  const subDispatches: Array<{ provider?: string; model?: string; reasoningEffort?: string }> = [];
+  ctx.provide('agents', { get: () => rootAgent, list: () => [rootAgent] });
+  ctx.provide('subagents', {
+    startActivation: async (opts: { agentOptions?: { provider?: string; model?: string; reasoningEffort?: string } }) => {
+      subDispatches.push(opts.agentOptions ?? {});
+      return {
+        childId: `w-${subDispatches.length}`,
+        result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }),
+        dispose: async () => {},
+      };
+    },
+  });
+
+  const fibers: Array<{ dispose(): Promise<void> }> = [];
+  try {
+    fibers.push(await ctx.plugin(flightRecorder, { outputPath: telemetryOut }));
+    fibers.push(await ctx.plugin(boardPlugin, { dbPath: join(workDir, 'board.db') }));
+    fibers.push(await ctx.plugin(teamPlugin, { cadenceSteps: 3, twoStrikeThreshold: 2, retryBackoffMs: 1 }));
+    fibers.push(await ctx.plugin(tuiPlugin, { interactive: false, appName: 'ns-dsh', version: '0.1.0' }));
+
+    assert.equal(ctx.nsTeam!.strategy, 'orchestrator');
+
+    // Step 1 pre-step selects frontier planner route and exposes <orchestrator-protocol> in prompt
+    await ctx.waterfall(
+      'agent/pre-step',
+      { agent: rootAgent, messages: [], turn: 1, step: 1, signal: AbortSignal.timeout(5000), modelSelection: currentModel as never },
+      async () => ({ kind: 'enter' as const, messages: [] }),
+    );
+    assert.equal(selects.at(-1)?.reasoningEffort, 'high');
+    const planPrompt = renderContextSnapshot(await ctx.systemPrompt.assemble({ agent: rootAgent }));
+    assert.match(planPrompt, /<orchestrator-protocol strategy="orchestrator" phase="planning"/);
+
+    const statusPlan = await ctx.nsTui!.executeCommand('/status');
+    assert.match(statusPlan?.text ?? '', /\[ORCH:PLAN\]/);
+
+    // propose_work creates tiered cards directly inside SQLite KanbanStore
+    await ctx.tools.get('propose_work')!.execute(
+      {
+        cards: [
+          { id: 'int-mech', title: 'Update doc label', writeScopes: ['README.md'] },
+          { id: 'int-sec', title: 'Fix token race condition in auth', writeScopes: ['src/auth.ts'] },
+        ],
+      },
+      { agent: rootAgent, signal: AbortSignal.timeout(5000) } as never,
+    );
+    assert.equal(ctx.nsBoard!.getCard('int-mech')?.modelTier, 'efficient');
+    assert.equal(ctx.nsBoard!.getCard('int-sec')?.modelTier, 'capable');
+
+    // exit_plan_mode creates inline orch card, posts plan comment, flips TUI to [ORCH:EXEC], switches to efficient executor
+    const handoff = (await ctx.tools.get('exit_plan_mode')!.execute(
+      { plan: 'Step 1: run workers\nStep 2: verify', executionTier: 'efficient' },
+      { agent: rootAgent, signal: AbortSignal.timeout(5000) } as never,
+    )) as { cardId: string };
+    assert.ok(ctx.nsBoard!.getComments(handoff.cardId).some((c) => c.kind === 'plan' && c.body.includes('[ORCHESTRATOR PLAN HANDOFF #1]')));
+
+    await ctx.waterfall(
+      'agent/pre-step',
+      { agent: rootAgent, messages: [], turn: 1, step: 2, signal: AbortSignal.timeout(5000), modelSelection: currentModel as never },
+      async () => ({ kind: 'enter' as const, messages: [] }),
+    );
+    assert.equal(selects.at(-1)?.reasoningEffort, 'low');
+    const statusExec = await ctx.nsTui!.executeCommand('/status');
+    assert.match(statusExec?.text ?? '', /\[ORCH:EXEC\]/);
+
+    // Per-card attempt 1 dispatch routes mechanical -> low and complex -> high
+    await ctx.tools.get('dispatch_worker')!.execute(
+      { cardId: 'int-mech', task: 'Do doc fix', useWorktree: false, testCommand: `${process.execPath} -e "process.exit(0)"` },
+      { agent: rootAgent, signal: AbortSignal.timeout(10_000) } as never,
+    );
+    await ctx.tools.get('dispatch_worker')!.execute(
+      { cardId: 'int-sec', task: 'Fix race', useWorktree: false, testCommand: `${process.execPath} -e "process.exit(0)"` },
+      { agent: rootAgent, signal: AbortSignal.timeout(10_000) } as never,
+    );
+    assert.equal(subDispatches[0]?.reasoningEffort, 'low');
+    assert.equal(subDispatches[1]?.reasoningEffort, 'high');
+
+    // Simulate 2-strike error -> auto replan + 429 quota swap -> GPT-6.1 Terra
+    ctx.emit('tools/result', { name: 'edit_file', arguments: {}, agent: rootAgent } as never, { isError: true, content: [] } as never);
+    ctx.emit('tools/result', { name: 'bash', arguments: { command: 'node --test' }, agent: rootAgent } as never, { isError: true, content: [] } as never);
+    assert.ok(ctx.nsBoard!.getComments(handoff.cardId).some((c) => c.body.includes('[2-STRIKE RE-PLAN]')));
+
+    const qAction = await ctx.waterfall(
+      'agent/request-error',
+      {
+        agent: rootAgent,
+        turn: 1,
+        step: 3,
+        provider: 'google-antigravity',
+        failure: { code: 'QUOTA_EXCEEDED', status: 429, message: 'exhausted' },
+        retryPolicy: undefined,
+        signal: AbortSignal.timeout(5000),
+      } as never,
+      async () => undefined,
+    );
+    assert.deepEqual(qAction, { kind: 'retry' });
+    assert.equal(selects.at(-1)?.model, 'gpt-6.1-terra');
+    assert.ok(ctx.nsBoard!.getComments(handoff.cardId).some((c) => c.body.includes('[QUOTA FAILOVER]')));
+
+    for await (const _chunk of ctx.llm.stream({
+      provider: 'openai-codex',
+      model: 'gpt-6.1-terra',
+      reasoningEffort: 'high' as never,
+      messages: [],
+      sessionId: 'orch-int-1' as never,
+    })) { /* drain */ }
+
+    const orchExecCtx = { agent: rootAgent, signal: new AbortController().signal } as never;
+    const statusBefore = (await ctx.tools.get('orchestrator_status')!.execute({}, orchExecCtx)) as { strategy: string; phase: string };
+    assert.equal(statusBefore.strategy, 'orchestrator');
+
+    const enterRes = (await ctx.tools.get('enter_plan_mode')!.execute(
+      { reason: 'Exercise manual re-plan and board card sync' },
+      orchExecCtx,
+    )) as { ok: boolean; phase: string };
+    assert.equal(enterRes.phase, 'planning');
+
+    const exitWithCards = (await ctx.tools.get('exit_plan_mode')!.execute(
+      {
+        plan: 'Split into efficient low-tier and capable security cards',
+        cards: [
+          { id: 'orch-cov-1', title: 'Update readme note', owner: 'coder', writeScopes: ['README.md'], modelTier: 'efficient' },
+          { id: 'orch-cov-2', title: 'Security auth refactor', description: 'Multi-file refactor', owner: 'coder', writeScopes: ['src/a.ts', 'src/b.ts', 'src/c.ts'], blockedBy: ['orch-cov-1'] },
+        ],
+      },
+      orchExecCtx,
+    )) as { ok: boolean; cardsCreated: number };
+    assert.equal(exitWithCards.ok, true);
+    assert.equal(exitWithCards.cardsCreated, 2);
+
+    const exitUpdateCards = (await ctx.tools.get('exit_plan_mode')!.execute(
+      {
+        plan: 'Refine existing card metadata on re-plan',
+        cards: [{ id: 'orch-cov-1', title: 'Update readme note', writeScopes: ['README.md'] }],
+      },
+      orchExecCtx,
+    )) as { ok: boolean; cardsCreated: number };
+    assert.equal(exitUpdateCards.ok, true);
+    assert.equal(exitUpdateCards.cardsCreated, 0);
+
+    await ctx.waterfall(
+      'tools/pre-execute' as never,
+      { agent: rootAgent, name: 'read_file', args: { path: 'README.md' }, signal: new AbortController().signal } as never,
+      async () => [{ type: 'text', text: 'ok' }],
+    );
+    await ctx.waterfall(
+      'tools/result' as never,
+      { agent: rootAgent, toolCallId: 'tc-cov-pass', name: 'read_file', args: { path: 'README.md' }, result: { isError: false, content: [{ type: 'text', text: 'ok' }] } } as never,
+      async () => ({ isError: false, content: [{ type: 'text', text: 'ok' }] }),
+    );
+    const retryRes = await ctx.waterfall(
+      'agent/request-error' as never,
+      {
+        agent: rootAgent,
+        provider: 'google-antigravity',
+        model: 'antigravity-gemini-3.8-flash',
+        failure: { kind: 'retryable', code: 'ECONNRESET', message: 'ECONNRESET transient socket hang up' },
+        attempt: 1,
+        signal: new AbortController().signal,
+      } as never,
+      async () => ({ kind: 'fail' as const }),
+    );
+    assert.equal((retryRes as { kind: string }).kind, 'retry');
+    await ctx.waterfall(
+      'agent/pre-step' as never,
+      {
+        agent: rootAgent,
+        messages: [{ role: 'user', id: 'm-orch-turn2' as never, source: { kind: 'user' }, content: [{ type: 'text', text: 'Start turn 2' }] }],
+        turn: 2,
+        step: 1,
+        signal: AbortSignal.timeout(2000),
+        modelSelection: { provider: 'openai-codex', model: 'gpt-6-luna', reasoningEffort: 'low' } as never,
+      } as never,
+      async () => ({ kind: 'enter' as const, messages: [] }),
+    );
+    await ctx.waterfall('agent/interrupt' as never, { agent: rootAgent, reason: 'user' } as never, async () => undefined);
+
+    // TUI /orchestrator exec flips back to executing, then clean turn-stopping closes inline card -> done
+    const execCmd = await ctx.nsTui!.executeCommand('/orchestrator exec Resume final step');
+    assert.equal(execCmd?.kind, 'success');
+    await ctx.serial('agent/turn-stopping', { agent: rootAgent, turn: 1, signal: new AbortController().signal } as never);
+    assert.equal(ctx.nsBoard!.getCard(handoff.cardId)?.column, 'done');
+
+    const frSnap = ctx.nsFlightRecorder!.snapshot('orch-int-1') as {
+      orchestratorPlanHandoffs: number;
+      orchestratorReplans: number;
+      modelBreakdown: Record<string, { steps: number }>;
+    };
+    assert.equal(frSnap.orchestratorPlanHandoffs, 4);
+    assert.equal(frSnap.orchestratorReplans, 2);
+    assert.equal(frSnap.modelBreakdown['openai-codex/gpt-6.1-terra:high']?.steps, 1);
+  } finally {
+    for (const f of fibers.reverse()) await f.dispose();
     rmSync(workDir, { recursive: true, force: true });
   }
 });

@@ -5,6 +5,12 @@ export interface PluginConfig {
     outputPath?: string;
 }
 export declare const Config: z<PluginConfig>;
+export interface ModelUsageEntry {
+    steps: number;
+    inputTokens: number;
+    outputTokens: number;
+    thinkingTokens: number;
+}
 export interface SessionTelemetry {
     sessionId: string;
     bootMs: number;
@@ -26,6 +32,9 @@ export interface SessionTelemetry {
     thinkingTokens: number;
     outputTokens: number;
     switchyardEscalations: number;
+    orchestratorPlanHandoffs: number;
+    orchestratorReplans: number;
+    modelBreakdown: Record<string, ModelUsageEntry>;
     advisorCalls: number;
     peakRssMb: number;
 }

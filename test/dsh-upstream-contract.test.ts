@@ -112,6 +112,9 @@ test('FlightRecorder captures step, direct vs PTC tool calls, DSH TokenUsage, an
       thinkingTokens: number;
       outputTokens: number;
       step1PromptTokens: number | null;
+      orchestratorPlanHandoffs: number;
+      orchestratorReplans: number;
+      modelBreakdown: Record<string, { steps: number; inputTokens: number; outputTokens: number; thinkingTokens: number }>;
     };
     assert.equal(snap.steps, 1);
     assert.equal(snap.ptcToolCalls, 1);
@@ -122,6 +125,10 @@ test('FlightRecorder captures step, direct vs PTC tool calls, DSH TokenUsage, an
     assert.equal(snap.step1PromptTokens, 550);
     assert.equal(snap.thinkingTokens, 25);
     assert.equal(snap.outputTokens, 80);
+    assert.equal(snap.orchestratorPlanHandoffs, 0);
+    assert.equal(snap.orchestratorReplans, 0);
+    assert.equal(snap.modelBreakdown['google-antigravity/antigravity-gemini-3.8-flash:default']?.steps, 1);
+    assert.equal(snap.modelBreakdown['google-antigravity/antigravity-gemini-3.8-flash:default']?.inputTokens, 550);
 
     ctx.emit('agent/disposed', { agent: fakeAgent } as never);
     ctx.emit('agent/disposed', { agent: null } as never);

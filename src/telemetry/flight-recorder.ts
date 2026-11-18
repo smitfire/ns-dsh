@@ -16,6 +16,13 @@ export const Config = z.object({
   outputPath: z.string(),
 }) as unknown as z<PluginConfig>;
 
+export interface ModelUsageEntry {
+  steps: number;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+}
+
 export interface SessionTelemetry {
   sessionId: string;
   bootMs: number;
@@ -37,6 +44,9 @@ export interface SessionTelemetry {
   thinkingTokens: number;
   outputTokens: number;
   switchyardEscalations: number;
+  orchestratorPlanHandoffs: number;
+  orchestratorReplans: number;
+  modelBreakdown: Record<string, ModelUsageEntry>;
   advisorCalls: number;
   peakRssMb: number;
 }
@@ -60,6 +70,7 @@ interface CodemodeMetricsLike {
 
 interface TeamRouterLike {
   router?: { stateFor(sessionId: string): { escalations: number } };
+  getOrchestratorState?(sessionId: string): { planHandoffs?: number; replans?: number };
 }
 
 export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void {
@@ -93,6 +104,9 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
         thinkingTokens: 0,
         outputTokens: 0,
         switchyardEscalations: 0,
+        orchestratorPlanHandoffs: 0,
+        orchestratorReplans: 0,
+        modelBreakdown: {},
         advisorCalls: 0,
         peakRssMb: Number((process.memoryUsage().rss / (1024 * 1024)).toFixed(1)),
       };
@@ -113,8 +127,22 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
     if (team?.router?.stateFor) {
       st.switchyardEscalations = team.router.stateFor(st.sessionId).escalations;
     }
+    if (team?.getOrchestratorState) {
+      const ost = team.getOrchestratorState(st.sessionId);
+      st.orchestratorPlanHandoffs = ost.planHandoffs ?? 0;
+      st.orchestratorReplans = ost.replans ?? 0;
+    }
     st.peakRssMb = Math.max(st.peakRssMb, Number((process.memoryUsage().rss / (1024 * 1024)).toFixed(1)));
     return st;
+  };
+
+  const cloneRow = (s: SessionTelemetry): SessionTelemetry => {
+    const synced = syncDerivedMetrics(s);
+    const clonedBreakdown: Record<string, ModelUsageEntry> = {};
+    for (const [k, v] of Object.entries(synced.modelBreakdown)) {
+      clonedBreakdown[k] = { ...v };
+    }
+    return { ...synced, contextCurve: [...synced.contextCurve], modelBreakdown: clonedBreakdown };
   };
 
   const flushToDisk = (targetPath = outFile): string | null => {
@@ -122,7 +150,7 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
     try {
       const abs = resolve(targetPath);
       mkdirSync(dirname(abs), { recursive: true });
-      const rows = [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
+      const rows = [...sessions.values()].map(cloneRow);
       if (rows.length === 0) return null;
       appendFileSync(abs, `${JSON.stringify({ timestamp: Date.now(), telemetry: rows })}\n`, 'utf8');
       return abs;
@@ -137,9 +165,9 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
     snapshot: (sessionId?: string) => {
       if (sessionId) {
         const existing = sessions.get(sessionId);
-        return syncDerivedMetrics({ ...(existing ?? ensure(sessionId)) });
+        return cloneRow(existing ?? ensure(sessionId));
       }
-      return [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
+      return [...sessions.values()].map(cloneRow);
     },
     flushToDisk,
   });
@@ -173,6 +201,14 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
     const rawSid = (options as { sessionId?: unknown }).sessionId;
     const sid = rawSid !== undefined ? String(rawSid) : 'default';
     const st = ensure(sid);
+    const reqProvider = String((options as { provider?: unknown }).provider ?? 'unknown');
+    const reqModel = String((options as { model?: unknown }).model ?? 'unknown');
+    const reqEffort = String((options as { reasoningEffort?: unknown }).reasoningEffort ?? 'default');
+    const modelKey = `${reqProvider}/${reqModel}:${reqEffort}`;
+    if (!st.modelBreakdown[modelKey]) {
+      st.modelBreakdown[modelKey] = { steps: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
+    }
+    st.modelBreakdown[modelKey].steps += 1;
     const reqStarted = performance.now();
     for await (const chunk of next()) {
       if (st.ttfrMs === null) {
@@ -193,9 +229,16 @@ export function apply(ctx: Context, rawConfig: Partial<PluginConfig> = {}): void
           st.uncachedInputTokens += uncachedIn;
           st.cachedInputTokens += cacheRead;
           st.cacheWriteTokens += cacheWrite;
+          st.modelBreakdown[modelKey].inputTokens += promptStepTokens;
         }
-        if (thinkTok > 0) st.thinkingTokens += thinkTok;
-        if (outTok > 0) st.outputTokens += outTok;
+        if (thinkTok > 0) {
+          st.thinkingTokens += thinkTok;
+          st.modelBreakdown[modelKey].thinkingTokens += thinkTok;
+        }
+        if (outTok > 0) {
+          st.outputTokens += outTok;
+          st.modelBreakdown[modelKey].outputTokens += outTok;
+        }
       }
       yield chunk;
     }

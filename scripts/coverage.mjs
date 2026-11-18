@@ -80,7 +80,7 @@ function buildSandboxEnv(baseEnv, sandboxDir) {
   };
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true });
   const env = { ...baseEnv, ...dirs };
-  for (const secretKey of ['TYPESAFE_API_KEY', 'DEEPSEEK_API_KEY', 'OCR_LLM_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'DSH_BIN']) {
+  for (const secretKey of ['TYPESAFE_API_KEY', 'DEEPSEEK_API_KEY', 'OCR_LLM_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'DSH_BIN', 'NODE_TEST_CONTEXT']) {
     delete env[secretKey];
   }
   return env;
@@ -282,6 +282,7 @@ rmSync(V8_DIR, { recursive: true, force: true });
 mkdirSync(V8_DIR, { recursive: true });
 
 const covEnv = { ...process.env, NODE_V8_COVERAGE: V8_DIR };
+delete covEnv.NODE_TEST_CONTEXT;
 for (const p of PLUGINS) {
   const dir = join(ROOT_DIR, 'plugins', p);
   const testDir = join(dir, 'test');
@@ -347,6 +348,13 @@ const summaryPath = join(COVERAGE_DIR, 'summary.json');
 const tmpSummaryPath = `${summaryPath}.${process.pid}.tmp`;
 writeFileSync(tmpSummaryPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
 renameSync(tmpSummaryPath, summaryPath);
+const gate1Path = join(ROOT_DIR, '.local', 'e2e', 'gate1-coverage.json');
+const { mkdirSync: ensureDirSync } = await import('node:fs');
+const { dirname: pathDirname } = await import('node:path');
+ensureDirSync(pathDirname(gate1Path), { recursive: true });
+const tmpGate1Path = `${gate1Path}.${process.pid}.tmp`;
+writeFileSync(tmpGate1Path, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+renameSync(tmpGate1Path, gate1Path);
 console.log(`First-party JavaScript line coverage: ${summary.pct}% (${summary.covered}/${summary.total})`);
 if (summary.pct < THRESHOLD_PCT) {
   console.error('Lowest covered files:', JSON.stringify(report.lowestCoveredFiles, null, 2));
