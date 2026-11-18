@@ -141,15 +141,15 @@ export function rollbackProfileConfig(profileDir) {
         copyFileSync(patchBak, join(profileDir, 'cordis.patch.yml'));
     return true;
 }
+export const WORKSPACE_PLUGINS = ['context', 'codemode', 'cuga', 'board', 'team', 'tui'];
 export function runUpgradeCanary(opts) {
     const root = resolve(opts.workspaceRoot);
     const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     const currentDsh = rootPkg.devDependencies?.['@deepseek-ai/dsh'] ?? '0.2.2-rc.3';
     const targetVersion = opts.targetDshVersion ?? currentDsh;
     const dryRun = opts.dryRun !== false;
-    const plugins = ['context', 'codemode', 'cuga', 'board', 'team'];
     const checks = [];
-    for (const name of plugins) {
+    for (const name of WORKSPACE_PLUGINS) {
         const dir = join(root, 'plugins', name);
         const started = performance.now();
         let range = '>=0.2.2-rc.3 <0.3.0-0';
@@ -202,9 +202,13 @@ export function runUpgradeCanary(opts) {
                         error = error ? `${error}; ${noTestsMsg}` : noTestsMsg;
                     }
                     else {
+                        // Strip NODE_TEST_CONTEXT so nested `node --test` invocations don't attach to the parent runner.
+                        const childEnv = { ...process.env };
+                        delete childEnv.NODE_TEST_CONTEXT;
                         const nt = spawnSync(process.execPath, ['--test', ...testFiles], {
                             cwd: dir,
                             encoding: 'utf8',
+                            env: childEnv,
                             timeout: 60_000,
                             stdio: ['ignore', 'pipe', 'pipe'],
                         });

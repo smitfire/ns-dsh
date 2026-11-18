@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 .forewisp/
 .ns-dsh/
+.local/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

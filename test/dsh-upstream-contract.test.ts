@@ -13,13 +13,13 @@ import {
   assertSatisfiesDshPrereleaseRange,
   runUpgradeCanary,
   satisfiesDshPrereleaseRange,
+  WORKSPACE_PLUGINS,
 } from '../dist/upgrade/canary.js';
 
 const ROOT = resolve(import.meta.dirname, '..');
 
-test('All 5 child plugins declare compatible DSH 0.2.2-rc.3 manifests and cordis patches', () => {
-  const names = ['context', 'codemode', 'cuga', 'board', 'team'];
-  for (const name of names) {
+test('All 6 child plugins declare compatible DSH 0.2.2-rc.3 manifests and cordis patches', () => {
+  for (const name of WORKSPACE_PLUGINS) {
     const pkgPath = join(ROOT, 'plugins', name, 'package.json');
     assert.equal(existsSync(pkgPath), true, `missing ${pkgPath}`);
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
@@ -140,10 +140,10 @@ test('Semver range matcher handles || unions, hyphen ranges, ^/~ bounds, and rej
   assert.throws(() => assertSatisfiesDshPrereleaseRange('0.2.2', '>=0.2.2 || '), /unsupported|empty/i);
 });
 
-test('Canary dry-run validates all 5 plugins and Switchyard config generator stays valid', () => {
+test('Canary dry-run validates all 6 plugins and Switchyard config generator stays valid', () => {
   const res = runUpgradeCanary({ workspaceRoot: ROOT, targetDshVersion: '0.2.2-rc.3', dryRun: true });
   assert.equal(res.ok, true, JSON.stringify(res));
-  assert.equal(res.checks.length, 5);
+  assert.equal(res.checks.length, WORKSPACE_PLUGINS.length);
   const toml = generateSwitchyardRoutesToml();
   assert.match(toml, /\[router\]/);
   assert.match(toml, /strategy = "stage_router"/);

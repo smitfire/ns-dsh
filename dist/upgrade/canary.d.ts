@@ -22,6 +22,7 @@ export declare function assertSatisfiesDshPrereleaseRange(version: string, range
 export declare function satisfiesDshPrereleaseRange(version: string, range: string): boolean;
 export declare function backupProfileConfig(profileDir: string): string;
 export declare function rollbackProfileConfig(profileDir: string): boolean;
+export declare const WORKSPACE_PLUGINS: readonly ["context", "codemode", "cuga", "board", "team", "tui"];
 export declare function runUpgradeCanary(opts: {
     workspaceRoot: string;
     targetDshVersion?: string;
