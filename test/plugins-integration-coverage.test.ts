@@ -1542,6 +1542,9 @@ test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyar
 
     assert.equal(ctx.nsTeam!.strategy, 'orchestrator');
 
+    await ctx.serial('agent/created' as never, { agent: rootAgent, source: 'startup' } as never);
+    assert.equal(selects.at(-1)?.reasoningEffort, 'high');
+
     // Step 1 pre-step selects frontier planner route and exposes <orchestrator-protocol> in prompt
     await ctx.waterfall(
       'agent/pre-step',
@@ -1568,8 +1571,8 @@ test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyar
     assert.equal(ctx.nsBoard!.getCard('int-mech')?.modelTier, 'efficient');
     assert.equal(ctx.nsBoard!.getCard('int-sec')?.modelTier, 'capable');
 
-    // exit_plan_mode creates inline orch card, posts plan comment, flips TUI to [ORCH:EXEC], switches to efficient executor
-    const handoff = (await ctx.tools.get('exit_plan_mode')!.execute(
+    // handoff_plan creates inline orch card, posts plan comment, flips TUI to [ORCH:EXEC], switches to efficient executor
+    const handoff = (await ctx.tools.get('handoff_plan')!.execute(
       { plan: 'Step 1: run workers\nStep 2: verify', executionTier: 'efficient' },
       { agent: rootAgent, signal: AbortSignal.timeout(5000) } as never,
     )) as { cardId: string };
@@ -1636,7 +1639,7 @@ test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyar
     )) as { ok: boolean; phase: string };
     assert.equal(enterRes.phase, 'planning');
 
-    const exitWithCards = (await ctx.tools.get('exit_plan_mode')!.execute(
+    const exitWithCards = (await ctx.tools.get('handoff_plan')!.execute(
       {
         plan: 'Split into efficient low-tier and capable security cards',
         cards: [
@@ -1649,7 +1652,7 @@ test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyar
     assert.equal(exitWithCards.ok, true);
     assert.equal(exitWithCards.cardsCreated, 2);
 
-    const exitUpdateCards = (await ctx.tools.get('exit_plan_mode')!.execute(
+    const exitUpdateCards = (await ctx.tools.get('handoff_plan')!.execute(
       {
         plan: 'Refine existing card metadata on re-plan',
         cards: [{ id: 'orch-cov-1', title: 'Update readme note', writeScopes: ['README.md'] }],

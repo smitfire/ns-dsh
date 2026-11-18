@@ -41,6 +41,11 @@ test('All 6 child plugins declare compatible DSH 0.2.2-rc.3 manifests and cordis
     assert.equal(existsSync(join(ROOT, 'plugins', name, pkg.dsh.bundle.patch)), true);
     assert.ok(pkg.exports?.['./mcp']);
   }
+  const rootPatch = readFileSync(join(ROOT, 'cordis.patch.yml'), 'utf8');
+  const teamPatch = readFileSync(join(ROOT, 'plugins', 'team', 'cordis.patch.yml'), 'utf8');
+  assert.match(rootPatch, /- id: plan-mode\s+disabled: true/);
+  assert.match(rootPatch, /- id: tool-agent-team\s+disabled: true/);
+  assert.match(teamPatch, /- id: plan-mode\s+disabled: true/);
 });
 
 test('FlightRecorder captures step, direct vs PTC tool calls, DSH TokenUsage, and flushes/evicts on dispose', async () => {
