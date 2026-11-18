@@ -291,6 +291,8 @@ async function runSingleDshAttempt({
   disableNsPlugins = false,
   ptcEnabled = false,
   label = 'dsh',
+  extraEnv = {},
+  unsetEnvKeys = [],
 }) {
   const patchFile = join(tmpdir(), `ns-patch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.yml`);
   const telemetryPath = join(tmpdir(), `ns-telem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.jsonl`);
@@ -309,11 +311,13 @@ async function runSingleDshAttempt({
     'never',
     safePrompt,
   ];
+  const attemptEnv = childEnv({ DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath, ...extraEnv });
+  for (const k of unsetEnvKeys) delete attemptEnv[k];
   const started = performance.now();
   const { stdout, stderr, code, signal, sawFinal, terminatedAfterFinal, finalWallMs } = await new Promise((resolveRun) => {
     const child = spawn(cmd, cmdArgs, {
       cwd,
-      env: childEnv({ DSH_HOME: dshHome, NS_DSH_TELEMETRY_PATH: telemetryPath }),
+      env: attemptEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -417,6 +421,8 @@ async function runSingleDshAttempt({
   let outputTokens = 0;
   let thinkingTokens = 0;
   let steps = 0;
+  let usageCalls = 0;
+  let unknownCalls = 0;
   let directToolCalls = 0;
   let ptcToolCalls = 0;
   let step1PromptTokens = null;
@@ -429,6 +435,7 @@ async function runSingleDshAttempt({
       emittedSessionId = ev.sessionId;
     }
     if ((ev.type === 'status' && ev.phase === 'step_end') || ev.type === 'step/end' || ev.type === 'turn/end' || ev.type === 'assistant/message') {
+      usageCalls += 1;
       const u = ev.usage ?? ev.data?.usage;
       if (u && typeof u === 'object') {
         const uncachedIn = Number(u.inputTokens ?? u.input_tokens ?? 0);
@@ -439,12 +446,16 @@ async function runSingleDshAttempt({
           if (step1PromptTokens === null) step1PromptTokens = promptStepTokens;
           contextCurve.push(promptStepTokens);
           inputTokens += promptStepTokens;
+        } else {
+          unknownCalls += 1;
         }
         uncachedInputTokens += uncachedIn;
         cachedInputTokens += cacheRead;
         cacheWriteTokens += cacheWrite;
         outputTokens += Number(u.outputTokens ?? u.output_tokens ?? 0);
         thinkingTokens += Number(u.reasoningTokens ?? u.thinkingTokens ?? 0);
+      } else {
+        unknownCalls += 1;
       }
     }
     if ((ev.type === 'status' && ev.phase === 'step_start') || ev.type === 'step/start') steps += 1;
@@ -511,6 +522,9 @@ async function runSingleDshAttempt({
     cacheWriteTokens: flightTelemetry?.cacheWriteTokens ?? cacheWriteTokens,
     thinkingTokens: flightTelemetry?.thinkingTokens ?? thinkingTokens,
     outputTokens: flightTelemetry?.outputTokens ?? outputTokens,
+    usageCalls,
+    unknownCalls,
+    sessionId: emittedSessionId || null,
     responseText: redactSecrets(finalText.slice(0, 2000)),
     ...(cleanErr ? { errorMessage: cleanErr } : {}),
     stderrTail: redactSecrets(stderr.slice(-400)),

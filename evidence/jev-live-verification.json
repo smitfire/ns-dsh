@@ -1,0 +1,77 @@
+{
+  "verifiedAt": "2026-11-16T16:54:20.101Z",
+  "endpoint": "https://api.typesafe.ai/v1/systemone",
+  "model": "jev-1.13.0",
+  "passed": true,
+  "directPythonProbe": {
+    "model": "jev-1.13.0",
+    "input_tokens": 627,
+    "output_tokens": 86,
+    "settled_microdollars": 27,
+    "latency_ms": 214.047,
+    "answers": {
+      "q_noul_relevant": {
+        "type": "noul",
+        "noul": 0.98
+      },
+      "q_noul_distractor": {
+        "type": "noul",
+        "noul": 0.01
+      },
+      "q_choice": {
+        "type": "choice",
+        "choice": "c_timing",
+        "confidence": 1,
+        "probabilities": {
+          "c_timing": 1,
+          "c_css": 0,
+          "NONE": 0
+        }
+      }
+    }
+  },
+  "daemonTests": {
+    "health": {
+      "status": "ok",
+      "strategy": "jev",
+      "pilot": true
+    },
+    "reconciliation": {
+      "complete": true,
+      "judgments": [],
+      "merged": false,
+      "reviewed": 0
+    },
+    "recall": {
+      "strategy": "jev",
+      "selectedIds": [
+        "593c3603-dbc7-4602-a0ae-fcfa74285c49"
+      ],
+      "rejectedDistractors": true
+    },
+    "sseAndFeedback": {
+      "offerId": 1,
+      "strategy": "jev",
+      "sequence1Entries": [
+        "593c3603-dbc7-4602-a0ae-fcfa74285c49"
+      ],
+      "presentedRecorded": true,
+      "usefulRecorded": true,
+      "sequence2Entries": [],
+      "suppressedAfterPresented": true
+    }
+  },
+  "budgetBefore": {
+    "ledger_id": "aceb2169-35f0-4915-9feb-6f9e04f9f1ab",
+    "ceiling_microdollars": 25000000,
+    "charged_microdollars": 0,
+    "blocked": false
+  },
+  "budgetAfter": {
+    "ledger_id": "aceb2169-35f0-4915-9feb-6f9e04f9f1ab",
+    "ceiling_microdollars": 25000000,
+    "charged_microdollars": 172,
+    "blocked": false
+  },
+  "deltaMicrodollars": 172
+}
