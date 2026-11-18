@@ -1,6 +1,11 @@
 - id: credentials
   disabled: false
 
+- id: llm-pi-ai
+  config:
+    providers:
+      openai-codex: {}
+
 - id: tool-agent-team
   disabled: true
 

@@ -35,6 +35,9 @@ export function apply(ctx, rawConfig = {}) {
                 thinkingTokens: 0,
                 outputTokens: 0,
                 switchyardEscalations: 0,
+                orchestratorPlanHandoffs: 0,
+                orchestratorReplans: 0,
+                modelBreakdown: {},
                 advisorCalls: 0,
                 peakRssMb: Number((process.memoryUsage().rss / (1024 * 1024)).toFixed(1)),
             };
@@ -54,8 +57,21 @@ export function apply(ctx, rawConfig = {}) {
         if (team?.router?.stateFor) {
             st.switchyardEscalations = team.router.stateFor(st.sessionId).escalations;
         }
+        if (team?.getOrchestratorState) {
+            const ost = team.getOrchestratorState(st.sessionId);
+            st.orchestratorPlanHandoffs = ost.planHandoffs ?? 0;
+            st.orchestratorReplans = ost.replans ?? 0;
+        }
         st.peakRssMb = Math.max(st.peakRssMb, Number((process.memoryUsage().rss / (1024 * 1024)).toFixed(1)));
         return st;
+    };
+    const cloneRow = (s) => {
+        const synced = syncDerivedMetrics(s);
+        const clonedBreakdown = {};
+        for (const [k, v] of Object.entries(synced.modelBreakdown)) {
+            clonedBreakdown[k] = { ...v };
+        }
+        return { ...synced, contextCurve: [...synced.contextCurve], modelBreakdown: clonedBreakdown };
     };
     const flushToDisk = (targetPath = outFile) => {
         if (!targetPath)
@@ -63,7 +79,7 @@ export function apply(ctx, rawConfig = {}) {
         try {
             const abs = resolve(targetPath);
             mkdirSync(dirname(abs), { recursive: true });
-            const rows = [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
+            const rows = [...sessions.values()].map(cloneRow);
             if (rows.length === 0)
                 return null;
             appendFileSync(abs, `${JSON.stringify({ timestamp: Date.now(), telemetry: rows })}\n`, 'utf8');
@@ -79,9 +95,9 @@ export function apply(ctx, rawConfig = {}) {
         snapshot: (sessionId) => {
             if (sessionId) {
                 const existing = sessions.get(sessionId);
-                return syncDerivedMetrics({ ...(existing ?? ensure(sessionId)) });
+                return cloneRow(existing ?? ensure(sessionId));
             }
-            return [...sessions.values()].map((s) => syncDerivedMetrics({ ...s }));
+            return [...sessions.values()].map(cloneRow);
         },
         flushToDisk,
     });
@@ -114,6 +130,14 @@ export function apply(ctx, rawConfig = {}) {
         const rawSid = options.sessionId;
         const sid = rawSid !== undefined ? String(rawSid) : 'default';
         const st = ensure(sid);
+        const reqProvider = String(options.provider ?? 'unknown');
+        const reqModel = String(options.model ?? 'unknown');
+        const reqEffort = String(options.reasoningEffort ?? 'default');
+        const modelKey = `${reqProvider}/${reqModel}:${reqEffort}`;
+        if (!st.modelBreakdown[modelKey]) {
+            st.modelBreakdown[modelKey] = { steps: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0 };
+        }
+        st.modelBreakdown[modelKey].steps += 1;
         const reqStarted = performance.now();
         for await (const chunk of next()) {
             if (st.ttfrMs === null) {
@@ -135,11 +159,16 @@ export function apply(ctx, rawConfig = {}) {
                     st.uncachedInputTokens += uncachedIn;
                     st.cachedInputTokens += cacheRead;
                     st.cacheWriteTokens += cacheWrite;
+                    st.modelBreakdown[modelKey].inputTokens += promptStepTokens;
                 }
-                if (thinkTok > 0)
+                if (thinkTok > 0) {
                     st.thinkingTokens += thinkTok;
-                if (outTok > 0)
+                    st.modelBreakdown[modelKey].thinkingTokens += thinkTok;
+                }
+                if (outTok > 0) {
                     st.outputTokens += outTok;
+                    st.modelBreakdown[modelKey].outputTokens += outTok;
+                }
             }
             yield chunk;
         }

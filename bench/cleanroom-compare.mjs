@@ -176,12 +176,27 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
 
   const stats = parsed?.stats ?? {};
   const models = stats.models ?? {};
-  const firstModel = Object.values(models)[0] ?? {};
-  const tokens = firstModel.tokens ?? {};
+  const modelEntries = Object.values(models);
+  let inputTok = 0;
+  let cacheTok = 0;
+  let outputTok = 0;
+  let thinkingTok = 0;
+  if (modelEntries.length > 0) {
+    for (const m of modelEntries) {
+      const t = m?.tokens ?? {};
+      inputTok += Number(t.input_tokens ?? t.input ?? t.prompt ?? 0);
+      cacheTok += Number(t.cache_read_tokens ?? t.cached ?? 0);
+      outputTok += Number(t.output_tokens ?? t.candidates ?? t.output ?? 0);
+      thinkingTok += Number(t.thinking_tokens ?? t.thoughts ?? 0);
+    }
+  } else {
+    const u = parsed?.usage ?? {};
+    inputTok = Number(u.input_tokens ?? u.input ?? u.prompt ?? parsed?.input_tokens ?? 0);
+    cacheTok = Number(u.cache_read_tokens ?? u.cached ?? 0);
+    outputTok = Number(u.output_tokens ?? u.candidates ?? u.output ?? parsed?.output_tokens ?? 0);
+    thinkingTok = Number(u.thinking_tokens ?? u.thoughts ?? 0);
+  }
   const tools = stats.tools ?? {};
-  const u = parsed?.usage ?? tokens;
-  const inputTok = Number(u.input_tokens ?? u.input ?? u.prompt ?? parsed?.input_tokens ?? 0);
-  const cacheTok = Number(u.cache_read_tokens ?? u.cached ?? 0);
   const agentTurnMs = typeof parsed?.duration_seconds === 'number'
     ? Number((parsed.duration_seconds * 1000).toFixed(1))
     : null;
@@ -190,6 +205,50 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
     : null;
   const redactedRawStats = parsed?.stats ? JSON.parse(redactSecrets(JSON.stringify(parsed.stats))) : null;
   const errMsg = parsed?.error ? redactSecrets(String(parsed.error)) : '';
+
+  let transcriptSteps = 0;
+  let transcriptToolCalls = 0;
+  let transcriptPlanHandoffs = 0;
+  const convId = parsed?.conversation_id;
+  if (typeof convId === 'string' && /^[A-Za-z0-9_-]+$/.test(convId)) {
+    const transcriptPath = join(agyHome, '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+    if (existsSync(transcriptPath)) {
+      try {
+        const lines = readFileSync(transcriptPath, 'utf8').split(/\r?\n/);
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          try {
+            const step = JSON.parse(trimmed);
+            if (step?.type === 'PLANNER_RESPONSE') {
+              transcriptSteps += 1;
+            }
+            if (Array.isArray(step?.tool_calls)) {
+              transcriptToolCalls += step.tool_calls.length;
+              for (const tc of step.tool_calls) {
+                if (tc?.name === 'exit_plan_mode') {
+                  transcriptPlanHandoffs += 1;
+                }
+              }
+            }
+          } catch {
+            /* ignore malformed jsonl line */
+          }
+        }
+      } catch {
+        /* ignore unreadable transcript */
+      }
+    }
+  }
+
+  let resolvedToolCalls = 0;
+  if (tools.totalCalls !== undefined && tools.totalCalls !== null) {
+    resolvedToolCalls = Number(tools.totalCalls);
+  } else if (parsed?.tool_calls !== undefined && parsed?.tool_calls !== null) {
+    resolvedToolCalls = Number(parsed.tool_calls);
+  } else {
+    resolvedToolCalls = transcriptToolCalls;
+  }
 
   return {
     harness: 'factory-default-agy',
@@ -200,12 +259,15 @@ export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flas
     bootOverheadMs,
     peakRssMb,
     turns: Number(parsed?.num_turns ?? 1),
+    steps: transcriptSteps || Number(parsed?.num_turns ?? 1),
     inputTokens: inputTok,
     uncachedInputTokens: Math.max(0, inputTok - cacheTok),
     cachedInputTokens: cacheTok,
-    outputTokens: Number(u.output_tokens ?? u.candidates ?? u.output ?? parsed?.output_tokens ?? 0),
-    thinkingTokens: Number(u.thinking_tokens ?? u.thoughts ?? 0),
-    toolCalls: Number(tools.totalCalls ?? parsed?.tool_calls ?? 0),
+    outputTokens: outputTok,
+    thinkingTokens: thinkingTok,
+    toolCalls: resolvedToolCalls,
+    orchestratorPlanHandoffs: transcriptPlanHandoffs,
+    modelBreakdown: redactedRawStats?.models ?? null,
     responseText: redactSecrets(String(parsed?.response ?? parsed?.text ?? res.stdout ?? '').slice(0, 2000)),
     ...(errMsg ? { errorMessage: errMsg } : {}),
     rawStats: redactedRawStats,
@@ -222,7 +284,14 @@ function assertSafePatchVal(name, val) {
   return s;
 }
 
-function makeDshOverlayPatch({ provider, model, reasoningEffort = 'low', disableNsPlugins = false, ptcEnabled = false }) {
+function makeDshOverlayPatch({
+  provider,
+  model,
+  reasoningEffort = 'low',
+  disableNsPlugins = false,
+  ptcEnabled = false,
+  teamStrategy,
+}) {
   const safeProvider = assertSafePatchVal('provider', provider);
   const safeModel = assertSafePatchVal('model', model);
   const safeEffort = assertSafePatchVal('reasoningEffort', reasoningEffort);
@@ -230,7 +299,7 @@ function makeDshOverlayPatch({ provider, model, reasoningEffort = 'low', disable
     '- id: credentials',
     '  disabled: false',
   ];
-  if (safeProvider === 'openai-codex') {
+  if (safeProvider === 'openai-codex' || !disableNsPlugins) {
     lines.push(
       '- id: llm-pi-ai',
       '  config:',
@@ -253,8 +322,16 @@ function makeDshOverlayPatch({ provider, model, reasoningEffort = 'low', disable
       '  disabled: false',
     );
   }
+  if (!disableNsPlugins && teamStrategy) {
+    const safeStrategy = assertSafePatchVal('teamStrategy', teamStrategy);
+    lines.push(
+      '- id: ns-team',
+      '  config:',
+      `    strategy: ${safeStrategy}`,
+    );
+  }
   if (disableNsPlugins) {
-    for (const id of ['ns-context', 'ns-codemode', 'ns-cuga', 'ns-board', 'ns-team', 'ns-flight-recorder']) {
+    for (const id of ['ns-context', 'ns-codemode', 'ns-cuga', 'ns-board', 'ns-team', 'ns-tui', 'ns-flight-recorder']) {
       lines.push(`- id: ${id}`, '  disabled: true');
     }
   }
@@ -290,13 +367,14 @@ async function runSingleDshAttempt({
   reasoningEffort = 'low',
   disableNsPlugins = false,
   ptcEnabled = false,
+  teamStrategy,
   label = 'dsh',
   extraEnv = {},
   unsetEnvKeys = [],
 }) {
   const patchFile = join(tmpdir(), `ns-patch-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.yml`);
   const telemetryPath = join(tmpdir(), `ns-telem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.jsonl`);
-  writeFileSync(patchFile, makeDshOverlayPatch({ provider, model, reasoningEffort, disableNsPlugins, ptcEnabled }), 'utf8');
+  writeFileSync(patchFile, makeDshOverlayPatch({ provider, model, reasoningEffort, disableNsPlugins, ptcEnabled, teamStrategy }), 'utf8');
 
   const safePrompt = prompt.startsWith('-') ? `Task: ${prompt}` : prompt;
   const cmd = USE_DARWIN_TIME ? '/usr/bin/time' : DSH_BIN;
@@ -516,6 +594,9 @@ async function runSingleDshAttempt({
     admittedBytes: flightTelemetry?.admittedBytes ?? 0,
     ftsBytesSaved: flightTelemetry?.ftsBytesSaved ?? 0,
     switchyardEscalations: flightTelemetry?.switchyardEscalations ?? 0,
+    orchestratorPlanHandoffs: flightTelemetry?.orchestratorPlanHandoffs ?? 0,
+    orchestratorReplans: flightTelemetry?.orchestratorReplans ?? 0,
+    modelBreakdown: flightTelemetry?.modelBreakdown ?? null,
     inputTokens: flightTelemetry?.inputTokens ?? inputTokens,
     uncachedInputTokens: flightTelemetry?.uncachedInputTokens ?? uncachedInputTokens,
     cachedInputTokens: flightTelemetry?.cachedInputTokens ?? cachedInputTokens,
