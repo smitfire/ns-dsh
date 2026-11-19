@@ -127,7 +127,7 @@ function probeMcpServer(pluginName, covEnv, sandboxDir) {
       { name: 'review_worktree_gate', arguments: { testCommand: 'node -e "process.exit(0)"', runOcr: false } },
     ],
     tui: [
-      { name: 'tui_format_status', arguments: { cwd: sandboxDir, sessionId: 'cov-s1', model: 'gemini-3.8-flash', planMode: true, forewispStrategy: 'jev', forewispOffers: 1 } },
+      { name: 'tui_format_status', arguments: { cwd: sandboxDir, sessionId: 'cov-s1', model: 'gemini-4-hydrogen', planMode: true, forewispStrategy: 'jev', forewispOffers: 1 } },
       { name: 'tui_format_diff', arguments: { path: 'src/a.ts', oldText: 'a', newText: 'b' } },
       { name: 'tui_format_diff', arguments: { path: 'src/new.ts', oldText: null, newText: 'line1\nline2', maxLines: 8 } },
       { name: 'tui_format_diff', arguments: { path: 'src/bad.ts', oldText: 123, newText: 'x' } },

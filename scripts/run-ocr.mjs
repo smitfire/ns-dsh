@@ -317,7 +317,7 @@ async function startDshOcrBridge() {
           creds: {
             token: bridgeToken,
             url: `http://127.0.0.1:${port}/v1`,
-            model: process.env.OCR_LLM_MODEL || 'antigravity-gemini-3.8-flash',
+            model: process.env.OCR_LLM_MODEL || 'antigravity-gemini-4-hydrogen',
             isLoopbackBridge: true,
           },
           isAlive,

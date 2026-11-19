@@ -141,7 +141,7 @@ export function cleanupCleanroomAgyHome(agyHome) {
   rmSync(agyHome, { recursive: true, force: true });
 }
 
-export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-3.8-flash-low' }) {
+export function runAgyCleanroom({ agyHome, cwd, prompt, model = 'gemini-4-hydrogen-low' }) {
   const started = performance.now();
   const safePrompt = prompt.startsWith('-') ? `Task: ${prompt}` : prompt;
   const cmd = USE_DARWIN_TIME ? '/usr/bin/time' : AGY_BIN;
@@ -345,7 +345,7 @@ export function prepareIsolatedBaselineDshHome() {
     copyFileSync(credSrc, join(dshHome, '.credentials.yaml'));
     chmodSync(join(dshHome, '.credentials.yaml'), 0o600);
   }
-  const initRes = spawnSync(DSH_BIN, ['plugin', '--profile', 'headless', 'add', 'dsh-antigravity-auth@0.1.10'], {
+  const initRes = spawnSync(DSH_BIN, ['plugin', '--profile', 'headless', 'add', 'dsh-antigravity-auth@0.1.12'], {
     env: childEnv({ DSH_HOME: dshHome }),
     encoding: 'utf8',
     timeout: 60_000,
@@ -363,7 +363,7 @@ async function runSingleDshAttempt({
   cwd,
   prompt,
   provider = 'google-antigravity',
-  model = 'antigravity-gemini-3.8-flash',
+  model = 'antigravity-gemini-4-hydrogen',
   reasoningEffort = 'low',
   disableNsPlugins = false,
   ptcEnabled = false,

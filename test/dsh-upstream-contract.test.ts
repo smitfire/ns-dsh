@@ -93,7 +93,7 @@ test('FlightRecorder captures step, direct vs PTC tool calls, DSH TokenUsage, an
     ctx.llm.registerAdapter(['google-antigravity', 'openai-codex'], new MockAdapter());
     for await (const _chunk of ctx.llm.stream({
       provider: 'google-antigravity',
-      model: 'antigravity-gemini-3.8-flash',
+      model: 'antigravity-gemini-4-hydrogen',
       messages: [],
       sessionId: 'sess-fr-1' as never,
     })) { /* drain */ }
@@ -132,8 +132,8 @@ test('FlightRecorder captures step, direct vs PTC tool calls, DSH TokenUsage, an
     assert.equal(snap.outputTokens, 80);
     assert.equal(snap.orchestratorPlanHandoffs, 0);
     assert.equal(snap.orchestratorReplans, 0);
-    assert.equal(snap.modelBreakdown['google-antigravity/antigravity-gemini-3.8-flash:default']?.steps, 1);
-    assert.equal(snap.modelBreakdown['google-antigravity/antigravity-gemini-3.8-flash:default']?.inputTokens, 550);
+    assert.equal(snap.modelBreakdown['google-antigravity/antigravity-gemini-4-hydrogen:default']?.steps, 1);
+    assert.equal(snap.modelBreakdown['google-antigravity/antigravity-gemini-4-hydrogen:default']?.inputTokens, 550);
 
     ctx.emit('agent/disposed', { agent: fakeAgent } as never);
     ctx.emit('agent/disposed', { agent: null } as never);

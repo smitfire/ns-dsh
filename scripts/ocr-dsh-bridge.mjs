@@ -20,7 +20,7 @@ const EXTRA_PROVIDER_WAIT_MS = 3_000;
 const CALL_TIMEOUT_MS = 120_000;
 
 const CANDIDATE_ROUTES = [
-  { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash', effort: 'low' },
+  { provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen', effort: 'low' },
   { provider: 'openai-codex', model: 'gpt-6-luna', effort: 'low' },
 ];
 

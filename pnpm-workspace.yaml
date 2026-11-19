@@ -7,4 +7,5 @@ allowBuilds:
   node-pty: true
   protobufjs: false
 minimumReleaseAgeExclude:
-  - dsh-antigravity-auth@0.1.10
+  - dsh-antigravity-auth@0.1.12
+  - '@cortexkit/antigravity-auth-core@3.1.2'

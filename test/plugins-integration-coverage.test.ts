@@ -56,7 +56,7 @@ function makeAgent(sessionId: string, cwd: string, provider = 'google-antigravit
   const agent = {
     id: sessionId,
     status: 'idle',
-    options: { provider, model: 'antigravity-gemini-3.8-flash' },
+    options: { provider, model: 'antigravity-gemini-4-hydrogen' },
     session: {
       id: sessionId,
       header: { cwd },
@@ -64,7 +64,7 @@ function makeAgent(sessionId: string, cwd: string, provider = 'google-antigravit
       append: () => 1,
     },
     model: {
-      current: () => ({ provider, model: 'antigravity-gemini-3.8-flash', reasoningEffort: 'medium' }),
+      current: () => ({ provider, model: 'antigravity-gemini-4-hydrogen', reasoningEffort: 'medium' }),
       select: (s: Record<string, unknown>) => selects.push(s),
     },
     followup: () => {},
@@ -449,7 +449,7 @@ test('Context, Board, CUGA, Team, Codemode, and TUI Cordis plugins interoperate 
         turn: 1,
         step: 1,
         signal: AbortSignal.timeout(2000),
-        modelSelection: { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash' } as never,
+        modelSelection: { provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen' } as never,
       },
       async () => ({ kind: 'enter' as const, messages: [] }),
     );
@@ -462,7 +462,7 @@ test('Context, Board, CUGA, Team, Codemode, and TUI Cordis plugins interoperate 
         turn: 1,
         step: 1,
         signal: AbortSignal.timeout(2000),
-        modelSelection: { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash' } as never,
+        modelSelection: { provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen' } as never,
       },
       async () => ({ kind: 'enter' as const, messages: [] }),
     );
@@ -475,7 +475,7 @@ test('Context, Board, CUGA, Team, Codemode, and TUI Cordis plugins interoperate 
         turn: 1,
         step: 2,
         signal: AbortSignal.timeout(2000),
-        modelSelection: { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash' } as never,
+        modelSelection: { provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen' } as never,
       },
       async () => ({ kind: 'enter' as const, messages: [] }),
     );
@@ -488,7 +488,7 @@ test('Context, Board, CUGA, Team, Codemode, and TUI Cordis plugins interoperate 
     // Exercise rendered context slot + llm/stream ack directly
     for await (const _chunk of ctx.waterfall(
       'llm/stream' as never,
-      { sessionId: 'int-sess-1', provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash' } as never,
+      { sessionId: 'int-sess-1', provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen' } as never,
       (async function* () {
         yield { type: 'finish', reason: { kind: 'stop' } };
       }) as never,
@@ -1010,7 +1010,7 @@ test('Context, Board, CUGA, Team, Codemode, and TUI Cordis plugins interoperate 
       '/resume int-sess-1',
       '/resume missing-sess',
       '/model',
-      '/model antigravity-gemini-3.8-flash turbo',
+      '/model antigravity-gemini-4-hydrogen turbo',
       '/model openai-codex/gpt-6-luna high',
       '/history',
       '/compact',
@@ -1504,11 +1504,11 @@ test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyar
   ctx.llm.registerAdapter(['google-antigravity', 'openai-codex'], new DummyLlmAdapter());
 
   const selects: Array<{ provider?: string; model?: string; reasoningEffort?: string }> = [];
-  let currentModel = { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash', reasoningEffort: 'low' };
+  let currentModel = { provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen', reasoningEffort: 'low' };
   const rootAgent = {
     id: 'orch-int-1',
     status: 'idle',
-    options: { provider: 'google-antigravity', model: 'antigravity-gemini-3.8-flash' },
+    options: { provider: 'google-antigravity', model: 'antigravity-gemini-4-hydrogen' },
     session: { id: 'orch-int-1', header: { cwd: workDir }, meta: { cwd: workDir }, append: () => 1 },
     model: {
       current: () => currentModel,
@@ -1677,7 +1677,7 @@ test('Orchestrator default integrates real SQLite Board, TUI controls, Switchyar
       {
         agent: rootAgent,
         provider: 'google-antigravity',
-        model: 'antigravity-gemini-3.8-flash',
+        model: 'antigravity-gemini-4-hydrogen',
         failure: { kind: 'retryable', code: 'ECONNRESET', message: 'ECONNRESET transient socket hang up' },
         attempt: 1,
         signal: new AbortController().signal,

@@ -78,7 +78,7 @@
     "@deepseek-ai/schemastery": "3.19.0",
     "@types/node": "^24.0.0",
     "@types/react": "^18.3.0",
-    "dsh-antigravity-auth": "0.1.10",
+    "dsh-antigravity-auth": "0.1.12",
     "react": "^18.3.1",
     "typescript": "^5.9.0"
   }

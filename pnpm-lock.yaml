@@ -75,8 +75,8 @@ importers:
         specifier: ^18.3.0
         version: 18.3.31
       dsh-antigravity-auth:
-        specifier: 0.1.10
-        version: 0.1.10(f44c2dad1d144e045e98e7e1e6a650a3)
+        specifier: 0.1.12
+        version: 0.1.12(f44c2dad1d144e045e98e7e1e6a650a3)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -382,8 +382,22 @@ packages:
     resolution: {integrity: sha512-Y5tqevQaUAZhhj82BpYMNC1ssvLQTVAfwKdm8iy8qwmhvC2/CpcAu8OC+QEtjM7pMk7knx83u1Qj8gzkicyelw==}
     engines: {node: '>=6.9.0'}
 
-  '@cortexkit/antigravity-auth-core@2.2.0':
-    resolution: {integrity: sha512-TEv4ZFTASmaIqilZBqyAjzs2HaIhSHI39oBGT75LMnakNqHkhR73JTddsCUuz/c9qB5QWxXse+Kpn11HAV0ofQ==}
+  '@cortexkit/antigravity-auth-core@3.1.2':
+    resolution: {integrity: sha512-U+RHcqgF8bHQclJkrZNcDOdf0Qmol6sLel3ubHZtnGfmZ86DEnB0xQ1BNzErp53Aw0Fp4PE2tdXz6QfoXXL9dA==}
+
+  '@cortexkit/claustrum-client@0.18.0':
+    resolution: {integrity: sha512-tdRTrtnmOk3En1ZT1T+J+8NDwZl5FNxtN4w4Im2KV12QypPwyMi1ZBUXS2X4ZyDn4vPbHiOK8gjP+hQMsZ/V9g==}
+
+  '@cortexkit/private-files@0.2.2':
+    resolution: {integrity: sha512-BdRxi4mzPkTUiZxKTlQV/RsESk5f34+sLk0qQLv1QlBQdkq2zw8yc0b3dm1qmZ5RfeChiBKEGgL6Qw31RCSaeA==}
+
+  '@cortexkit/store@0.2.3':
+    resolution: {integrity: sha512-cOCjAhb2rJp9u71xHXTlb2tS67237hHVN5DCB+aVh9S/FSu1UjOj8j/LjTSnVAZYXrNuWWb8eoQghiEcDtNT8g==}
+    engines: {node: '>=18'}
+
+  '@cortexkit/subc-client@0.24.0':
+    resolution: {integrity: sha512-adx2FoWdJqqEyOOChX3I7SKOUhoxDohK1lCn6Kj4OQvB4jIKONJ/8MoCc/jDnRidoiOx+k+K/nZcybHMYbBc5Q==}
+    engines: {node: '>=18'}
 
   '@deepseek-ai/cordis-plugin-group@1.1.0':
     resolution: {integrity: sha512-VVGcw29YWG83D9YqYsivyfIkcPdd+tgrc/Lj4GkxS5n0i6++jpY6nNSKM/6JU7F7phUT/Q5Y9o30rcYbE1pW4w==}
@@ -3829,8 +3843,8 @@ packages:
     resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
     engines: {node: '>=0.3.1'}
 
-  dsh-antigravity-auth@0.1.10:
-    resolution: {integrity: sha512-CiQoc59j5udl8ApFBB6kgRLcCqhvcZPU5HYjOQaJxBBKcwpnGCNY07GPWL6CRMEThjb+Nc9j2L4/ZfGD5rNFig==}
+  dsh-antigravity-auth@0.1.12:
+    resolution: {integrity: sha512-WDvfM8HRdkSj+dPCqu1buU2eQAlvgIfZ+ks+UrxSCzAQQezseBZ/ImswcajZQWydMuEIqYG1dlDF24fQkkO8fQ==}
     engines: {node: ^22.19.0 || >=24.0.0}
     peerDependencies:
       '@deepseek-ai/cordis': ^4.0.4
@@ -4045,6 +4059,9 @@ packages:
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
+
+  jsonc-parser@3.3.1:
+    resolution: {integrity: sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ==}
 
   jwa@2.0.1:
     resolution: {integrity: sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==}
@@ -4735,10 +4752,27 @@ snapshots:
 
   '@babel/runtime@7.29.14': {}
 
-  '@cortexkit/antigravity-auth-core@2.2.0':
+  '@cortexkit/antigravity-auth-core@3.1.2':
     dependencies:
+      '@cortexkit/claustrum-client': 0.18.0
+      '@cortexkit/private-files': 0.2.2
+      '@cortexkit/subc-client': 0.24.0
+      jsonc-parser: 3.3.1
       xdg-basedir: 5.1.0
       zod: 4.6.6
+
+  '@cortexkit/claustrum-client@0.18.0':
+    dependencies:
+      '@cortexkit/store': 0.2.3
+      '@cortexkit/subc-client': 0.24.0
+
+  '@cortexkit/private-files@0.2.2': {}
+
+  '@cortexkit/store@0.2.3':
+    dependencies:
+      '@cortexkit/private-files': 0.2.2
+
+  '@cortexkit/subc-client@0.24.0': {}
 
   '@deepseek-ai/cordis-plugin-group@1.1.0(@deepseek-ai/cordis-plugin-loader@1.1.0)(@deepseek-ai/cordis@4.1.0)':
     dependencies:
@@ -9088,9 +9122,9 @@ snapshots:
 
   diff@9.0.0: {}
 
-  dsh-antigravity-auth@0.1.10(f44c2dad1d144e045e98e7e1e6a650a3):
+  dsh-antigravity-auth@0.1.12(f44c2dad1d144e045e98e7e1e6a650a3):
     dependencies:
-      '@cortexkit/antigravity-auth-core': 2.2.0
+      '@cortexkit/antigravity-auth-core': 3.1.2
       '@deepseek-ai/cordis': 4.1.0(@deepseek-ai/cordis-plugin-include@1.1.0)(@deepseek-ai/cordis-plugin-loader@1.1.0)
       '@deepseek-ai/dsh-agent': 0.2.2-rc.3(cbef900d773c0d0ee336f7e4f4030cb2)
       '@deepseek-ai/dsh-api-remotes': 0.2.2-rc.3(@deepseek-ai/cordis@4.1.0)(@deepseek-ai/dsh-scope@0.2.2-rc.3(@deepseek-ai/cordis@4.1.0))
@@ -9327,6 +9361,8 @@ snapshots:
       ts-algebra: 2.0.0
 
   json-schema-traverse@1.0.0: {}
+
+  jsonc-parser@3.3.1: {}
 
   jwa@2.0.1:
     dependencies:
