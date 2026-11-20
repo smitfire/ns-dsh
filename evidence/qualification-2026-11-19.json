@@ -1,0 +1,266 @@
+{
+  "schema": "ns-dsh.qualification.v1",
+  "generatedAt": "2026-11-19T21:22:24.637Z",
+  "allGatesPassed": true,
+  "dshVersion": "0.2.2-rc.3",
+  "sharedJevBudgetLedger": {
+    "ledger_id": "aceb2169-35f0-4915-9feb-6f9e04f9f1ab",
+    "ceiling_microdollars": 25000000,
+    "charged_microdollars": 304148,
+    "blocked": false
+  },
+  "gates": {
+    "gate1_tests_and_coverage": {
+      "passed": true,
+      "linesPct": 90.42,
+      "linesCovered": 8242,
+      "linesTotal": 9115
+    },
+    "gate2_live_routes_and_jev": {
+      "passed": true,
+      "forewispStrategy": "jev",
+      "routes": [
+        {
+          "id": "agy-flash-low",
+          "provider": "google-antigravity",
+          "model": "antigravity-gemini-3.8-flash",
+          "passed": true,
+          "stages": {
+            "discovery": true,
+            "effort": true,
+            "streaming": true,
+            "toolCall": true,
+            "toolResult": true,
+            "usage": true,
+            "cancellation": true
+          },
+          "cancelMs": 0.2
+        },
+        {
+          "id": "agy-flash-high",
+          "provider": "google-antigravity",
+          "model": "antigravity-gemini-3.8-flash",
+          "passed": true,
+          "stages": {
+            "discovery": true,
+            "effort": true,
+            "streaming": true,
+            "toolCall": true,
+            "toolResult": true,
+            "usage": true,
+            "cancellation": true
+          },
+          "cancelMs": 0.3
+        },
+        {
+          "id": "codex-luna-low",
+          "provider": "openai-codex",
+          "model": "gpt-6-luna",
+          "passed": true,
+          "stages": {
+            "discovery": true,
+            "effort": true,
+            "streaming": true,
+            "toolCall": true,
+            "toolResult": true,
+            "usage": true,
+            "cancellation": true
+          },
+          "cancelMs": 0.4
+        },
+        {
+          "id": "codex-terra-high",
+          "provider": "openai-codex",
+          "model": "gpt-6.1-terra",
+          "passed": true,
+          "stages": {
+            "discovery": true,
+            "effort": true,
+            "streaming": true,
+            "toolCall": true,
+            "toolResult": true,
+            "usage": true,
+            "cancellation": true
+          },
+          "cancelMs": 0.4
+        }
+      ]
+    },
+    "gate3_and_4_role_matrix": {
+      "passed": true,
+      "totalRuns": 18,
+      "passedCount": 18,
+      "unknownCalls": 0
+    },
+    "gate5_frozen_matched_comparison": {
+      "passed": true,
+      "freezeHash": "10f9ef29aaca76adbf4b6c94c201a755026f195ee4fac434b705bb4ff2e4a121",
+      "totalRuns": 30,
+      "byArm": {
+        "cleanroom-agy-flash": {
+          "runs": 5,
+          "accepted": 5,
+          "avgWallMs": 17716.3,
+          "avgSteps": 3.8,
+          "avgToolCalls": 5.2,
+          "avgUncachedInputTokens": 0,
+          "avgCachedInputTokens": 25054.8,
+          "avgOutputTokens": 1385.4,
+          "avgThinkingTokens": 383,
+          "totalPlanHandoffs": 0,
+          "totalReplans": 0,
+          "kanbanAuditedRuns": 0,
+          "totalUnknownCalls": 0
+        },
+        "cleanroom-agy-orchestrator": {
+          "runs": 5,
+          "accepted": 4,
+          "avgWallMs": 117465.9,
+          "avgSteps": 6.4,
+          "avgToolCalls": 9.6,
+          "avgUncachedInputTokens": 0,
+          "avgCachedInputTokens": 89546.6,
+          "avgOutputTokens": 5789.2,
+          "avgThinkingTokens": 3326,
+          "totalPlanHandoffs": 4,
+          "totalReplans": 0,
+          "kanbanAuditedRuns": 0,
+          "totalUnknownCalls": 0
+        },
+        "factory-dsh": {
+          "runs": 5,
+          "accepted": 5,
+          "avgWallMs": 20260.2,
+          "avgSteps": 4.6,
+          "avgToolCalls": 9.8,
+          "avgUncachedInputTokens": 81406.4,
+          "avgCachedInputTokens": 55320.6,
+          "avgOutputTokens": 1109.2,
+          "avgThinkingTokens": 1111.2,
+          "totalPlanHandoffs": 0,
+          "totalReplans": 0,
+          "kanbanAuditedRuns": 0,
+          "totalUnknownCalls": 0
+        },
+        "ns-dsh-switchyard-reactive": {
+          "runs": 5,
+          "accepted": 5,
+          "avgWallMs": 18960.4,
+          "avgSteps": 3.6,
+          "avgToolCalls": 11.8,
+          "avgUncachedInputTokens": 63198.2,
+          "avgCachedInputTokens": 40486.6,
+          "avgOutputTokens": 1193.8,
+          "avgThinkingTokens": 953.4,
+          "totalPlanHandoffs": 0,
+          "totalReplans": 0,
+          "kanbanAuditedRuns": 0,
+          "totalUnknownCalls": 0
+        },
+        "ns-dsh-orchestrator": {
+          "runs": 5,
+          "accepted": 5,
+          "avgWallMs": 26197.7,
+          "avgSteps": 5.4,
+          "avgToolCalls": 17.2,
+          "avgUncachedInputTokens": 104854.6,
+          "avgCachedInputTokens": 76108.8,
+          "avgOutputTokens": 1459.8,
+          "avgThinkingTokens": 1622.4,
+          "totalPlanHandoffs": 5,
+          "totalReplans": 0,
+          "kanbanAuditedRuns": 5,
+          "totalUnknownCalls": 0
+        },
+        "ns-dsh-orchestrator-forewisp": {
+          "runs": 5,
+          "accepted": 5,
+          "avgWallMs": 23413.1,
+          "avgSteps": 4.8,
+          "avgToolCalls": 15.4,
+          "avgUncachedInputTokens": 89991.4,
+          "avgCachedInputTokens": 63935.6,
+          "avgOutputTokens": 1413,
+          "avgThinkingTokens": 1318.2,
+          "totalPlanHandoffs": 5,
+          "totalReplans": 0,
+          "kanbanAuditedRuns": 5,
+          "totalUnknownCalls": 0
+        }
+      }
+    },
+    "gate6_terminal_and_browser_hitl": {
+      "passed": true,
+      "pty": {
+        "idempotentStart": true,
+        "tuiRender": true,
+        "slashCommands": true,
+        "orchestratorCommand": true,
+        "unicodePaste": true,
+        "ctrlCCancel": true,
+        "sigwinchResize": true,
+        "exitDetachesWebUiAlive": true,
+        "resumeSameLiveHost": true
+      },
+      "browserCdp": {
+        "cdpPort": 19232,
+        "boardPageVerified": true,
+        "consoleErrors": 0,
+        "pageErrors": 0,
+        "sseAutoUnblockRevision": 5,
+        "unmetDependencyStatus": 400,
+        "staleCasStatus": 409,
+        "crossOriginStatus": 403,
+        "tuiUnauthAttachStatus": 403
+      }
+    },
+    "gate7_github_and_continuous_soak": {
+      "passed": true,
+      "githubIssue": {
+        "repository": "smitfire/ns-dsh-e2e-sandbox",
+        "issueNumber": 1,
+        "issueUrl": "https://github.com/smitfire/ns-dsh-e2e-sandbox/issues/1",
+        "ocrPassed": true,
+        "crossFamilyReviewPassed": true
+      },
+      "soak": {
+        "targetHours": 2,
+        "elapsedMs": 7200002,
+        "wallElapsedMs": 9217265,
+        "osSuspendedMs": 2017263,
+        "osSuspendCount": 1,
+        "networkOutageMs": 25653,
+        "networkOutageCount": 1,
+        "cycles": 224,
+        "maxStallGapMs": 30211,
+        "totalUnknownCalls": 0,
+        "inspectionsCompleted": 8,
+        "featureWavesCompleted": 4,
+        "faultsPassed": true,
+        "midSoakSurfacesPassed": true,
+        "midSoakRestartPassed": true
+      }
+    },
+    "gate8_synthetic_cap_and_rollback": {
+      "passed": true,
+      "syntheticCap": {
+        "passed": true,
+        "syntheticCapMicrodollars": 1,
+        "syntheticChargedMicrodollars": 0,
+        "hardStopHttpStatus": 429,
+        "hardStopError": "provider_budget_exhausted",
+        "gracefulContextOffers": 1,
+        "sharedLedgerUnchanged": true
+      },
+      "rollbackPreservation": {
+        "passed": true,
+        "canaryDryRunOk": true,
+        "incompatibleTargetRejected": true,
+        "profileHashRestored": true,
+        "boardCardPreserved": true,
+        "forewispMemoryPreserved": true,
+        "dumpConfigSucceeded": true
+      }
+    }
+  }
+}

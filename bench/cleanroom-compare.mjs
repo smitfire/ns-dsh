@@ -396,6 +396,7 @@ async function runSingleDshAttempt({
     const child = spawn(cmd, cmdArgs, {
       cwd,
       env: attemptEnv,
+      detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -407,21 +408,62 @@ async function runSingleDshAttempt({
     let settled = false;
     let graceTimer = null;
     let killFallbackTimer = null;
+    let forceCloseTimer = null;
+    let hardTimer = null;
 
-    const hardTimer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch { /* ignore */ }
-    }, 180_000);
+    const killTree = (sig) => {
+      if (child.pid && process.platform !== 'win32') {
+        try { process.kill(-child.pid, sig); } catch { /* ignore */ }
+      }
+      try { child.kill(sig); } catch { /* ignore */ }
+    };
+
+    const clearAllTimers = () => {
+      if (hardTimer) clearTimeout(hardTimer);
+      if (graceTimer) clearTimeout(graceTimer);
+      if (killFallbackTimer) clearTimeout(killFallbackTimer);
+      if (forceCloseTimer) clearTimeout(forceCloseTimer);
+      hardTimer = null;
+      graceTimer = null;
+      killFallbackTimer = null;
+      forceCloseTimer = null;
+    };
 
     const finish = (payload) => {
       if (settled) return;
       settled = true;
-      clearTimeout(hardTimer);
-      if (graceTimer) clearTimeout(graceTimer);
-      if (killFallbackTimer) clearTimeout(killFallbackTimer);
+      clearAllTimers();
       resolveRun(payload);
     };
 
+    let forceClosing = false;
+    const scheduleForceClose = (delayMs, codeFallback) => {
+      forceClosing = true;
+      if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
+      if (killFallbackTimer) { clearTimeout(killFallbackTimer); killFallbackTimer = null; }
+      if (forceCloseTimer) { clearTimeout(forceCloseTimer); forceCloseTimer = null; }
+      forceCloseTimer = setTimeout(() => {
+        finish({
+          stdout: out,
+          stderr: err,
+          code: child.exitCode ?? codeFallback,
+          signal: child.signalCode ?? (child.exitCode === null ? 'SIGKILL' : null),
+          sawFinal: sawFinalEvent,
+          terminatedAfterFinal: termAfterFinal,
+          finalWallMs: recordedFinalWallMs ?? Number((performance.now() - started).toFixed(1)),
+        });
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, delayMs);
+    };
+
+    hardTimer = setTimeout(() => {
+      killTree('SIGKILL');
+      scheduleForceClose(500, 1);
+    }, 180_000);
+
     const inspectLine = (raw) => {
+      if (forceClosing) return;
       const t = raw.trim();
       if (!t.startsWith('{')) return;
       try {
@@ -431,9 +473,10 @@ async function runSingleDshAttempt({
           recordedFinalWallMs = Number((performance.now() - started).toFixed(1));
           graceTimer = setTimeout(() => {
             termAfterFinal = true;
-            try { child.kill('SIGTERM'); } catch { /* ignore */ }
+            killTree('SIGTERM');
             killFallbackTimer = setTimeout(() => {
-              try { child.kill('SIGKILL'); } catch { /* ignore */ }
+              killTree('SIGKILL');
+              scheduleForceClose(300, 1);
             }, 2000);
           }, 1500);
         }
