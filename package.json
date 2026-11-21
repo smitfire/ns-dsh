@@ -29,6 +29,7 @@
     "dist",
     "bin",
     "bench",
+    "scripts/ns-dsh-shim.sh",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

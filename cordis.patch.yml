@@ -6,6 +6,18 @@
     providers:
       openai-codex: {}
 
+- id: tool-executor-native
+  disabled: true
+
+- id: tool-executor-ptc
+  disabled: false
+
+- id: agent-default-model
+  config:
+    provider: google-antigravity
+    model: antigravity-gemini-4-hydrogen
+    reasoningEffort: low
+
 - id: tool-agent-team
   disabled: true
 

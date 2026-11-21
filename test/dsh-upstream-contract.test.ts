@@ -45,6 +45,8 @@ test('All 6 child plugins declare compatible DSH 0.2.2-rc.3 manifests and cordis
   const teamPatch = readFileSync(join(ROOT, 'plugins', 'team', 'cordis.patch.yml'), 'utf8');
   assert.match(rootPatch, /- id: plan-mode\s+disabled: true/);
   assert.match(rootPatch, /- id: tool-agent-team\s+disabled: true/);
+  assert.match(rootPatch, /- id: tool-executor-native\s+disabled: true/);
+  assert.match(rootPatch, /- id: tool-executor-ptc\s+disabled: false/);
   assert.match(teamPatch, /- id: plan-mode\s+disabled: true/);
 });
 
@@ -286,6 +288,76 @@ test('backupProfileConfig, rollbackProfileConfig, cleanTempBackup, writeJsonAtom
     assert.equal(withTscRes.checks[0].unitTestsPassed, false);
     assert.equal(withTscRes.checks[1].unitTestsPassed, false);
     assert.equal(withTscRes.checks[2].typecheckPassed, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ns-dsh derives isolated per-project stateDir and links executable ns-dsh + nsd shim', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ns-dsh-link-test-'));
+  try {
+    const repoA = join(dir, 'repo-a');
+    const repoB = join(dir, 'repo-b');
+    const subA = join(repoA, 'nested', 'sub');
+    const binDir = join(dir, 'bin');
+    mkdirSync(subA, { recursive: true });
+    mkdirSync(repoB, { recursive: true });
+    execFileSync('git', ['init'], { cwd: repoA, stdio: 'ignore' });
+    execFileSync('git', ['init'], { cwd: repoB, stdio: 'ignore' });
+
+    const cleanEnv: Record<string, string | undefined> = { ...process.env };
+    delete cleanEnv.NS_DSH_STATE_DIR;
+    delete cleanEnv.DSH_BIN;
+
+    const statusA = JSON.parse(
+      execFileSync(process.execPath, [join(ROOT, 'bin', 'ns-dsh.mjs'), 'status'], {
+        cwd: repoA,
+        env: cleanEnv,
+        encoding: 'utf8',
+      }),
+    ) as { projectRoot: string; stateDir: string };
+    const statusSubA = JSON.parse(
+      execFileSync(process.execPath, [join(ROOT, 'bin', 'ns-dsh.mjs'), 'status'], {
+        cwd: subA,
+        env: cleanEnv,
+        encoding: 'utf8',
+      }),
+    ) as { projectRoot: string; stateDir: string };
+    const statusB = JSON.parse(
+      execFileSync(process.execPath, [join(ROOT, 'bin', 'ns-dsh.mjs'), 'status'], {
+        cwd: repoB,
+        env: cleanEnv,
+        encoding: 'utf8',
+      }),
+    ) as { projectRoot: string; stateDir: string };
+
+    assert.equal(statusA.projectRoot, realpathSync(repoA));
+    assert.equal(statusSubA.projectRoot, realpathSync(repoA));
+    assert.equal(statusA.stateDir, statusSubA.stateDir);
+    assert.notEqual(statusA.stateDir, statusB.stateDir);
+    assert.match(statusA.stateDir, /\/\.local\/state\/ns-dsh\/projects\/repo-a-[0-9a-f]{10}$/);
+    assert.equal(existsSync(join(repoA, '.ns-dsh')), false);
+
+    const linkOut = JSON.parse(
+      execFileSync(process.execPath, [join(ROOT, 'bin', 'ns-dsh.mjs'), 'link', '--bin-dir', binDir], {
+        cwd: repoA,
+        env: cleanEnv,
+        encoding: 'utf8',
+      }),
+    ) as { ok: boolean; nsDsh: string; alias: string };
+    assert.equal(linkOut.ok, true);
+    assert.equal(existsSync(linkOut.nsDsh), true);
+    assert.equal(realpathSync(linkOut.alias), realpathSync(linkOut.nsDsh));
+
+    const shimStatus = JSON.parse(
+      execFileSync(linkOut.alias, ['status'], {
+        cwd: repoB,
+        env: cleanEnv,
+        encoding: 'utf8',
+      }),
+    ) as { projectRoot: string; stateDir: string };
+    assert.equal(shimStatus.projectRoot, realpathSync(repoB));
+    assert.equal(shimStatus.stateDir, statusB.stateDir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
