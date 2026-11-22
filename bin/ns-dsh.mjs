@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import {
   chmodSync,
   closeSync,
   constants,
+  copyFileSync,
   existsSync,
   fstatSync,
   lstatSync,
@@ -15,6 +17,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -78,13 +81,16 @@ function printUsage() {
   console.log(`Usage: ns-dsh [command] [options]
 
 Commands:
-  tui [--resume <id> | --new]       Attach Claude/agy-style tmux TUI (default command)
+  tui [--resume <id> | --new]       Attach Claude/agy-style tmux TUI (default command, auto-resumes)
+  run | -p "<prompt>"               Run one headless task in the current project and exit
+  web | open [--no-open]            Ensure host + Kanban board are running and open WebUI
   start [--port <n>] [--resume <id> | --new]
                                       Start persistent tmux DSH host + Forewisp JEV daemon + keepalive watchdog
   shutdown                            Gracefully stop persistent ns-dsh host & Forewisp daemon
   board [--port <n>]                  Show WebUI Kanban URL & snapshot summary
   tasks [--port <n>]                  Print current Kanban board tasks as JSON
-  status                              Show installed DSH version and workspace plugin versions
+  status                              Show installed DSH version, project root, state dir, and plugins
+  link [--bin-dir <dir>]              Install ns-dsh wrapper & nsd symlink into ~/.local/bin
   install [--profile <web|headless>]  Install ns-dsh + 6 child plugins into DSH profile(s)
   upgrade [--target <ver>] [--dry-run] [--profile <name>]
                                       Run canary verification before updating DSH / profile
@@ -109,7 +115,7 @@ function flagValue(args, flag) {
   return next;
 }
 
-function cmdStatus() {
+function cmdStatus(args = []) {
   const pkg = JSON.parse(readFileSync(join(ROOT_DIR, 'package.json'), 'utf8'));
   const dshVer = spawnSync(DSH_BIN, ['--version'], { env: childEnv(), encoding: 'utf8' });
   const plugins = CHILD_PLUGINS.map((p) => {
@@ -121,6 +127,8 @@ function cmdStatus() {
     version: pkg.version,
     dshBinary: DSH_BIN,
     dshVersion: resolveDshVersion(dshVer),
+    projectRoot: resolveProjectRoot(),
+    stateDir: resolveStateDirReadOnly(args),
     plugins,
   }, null, 2));
 }
@@ -289,8 +297,90 @@ function validateServicePort(raw, defaultPort, label) {
   return port;
 }
 
+function isLoopbackPortFree(port) {
+  return new Promise((resolveFree) => {
+    const srv = createServer();
+    srv.unref();
+    srv.once('error', () => resolveFree(false));
+    srv.listen(port, '127.0.0.1', () => {
+      srv.close(() => resolveFree(true));
+    });
+  });
+}
+
+async function pickFreePort(preferred, avoidPort, basePort) {
+  const candidates = [];
+  if (
+    Number.isInteger(preferred) &&
+    preferred >= 1 &&
+    preferred <= 65535 &&
+    preferred !== avoidPort &&
+    preferred !== 7420 &&
+    preferred !== 19222
+  ) {
+    candidates.push(preferred);
+  }
+  for (let offset = 0; offset < 80; offset += 1) {
+    const p = basePort + offset;
+    if (p !== avoidPort && p !== 7420 && p !== 19222 && !candidates.includes(p)) {
+      candidates.push(p);
+    }
+  }
+  for (const p of candidates) {
+    if (await isLoopbackPortFree(p)) return p;
+  }
+  throw new Error(`No free loopback port available in range ${basePort}..${basePort + 79}`);
+}
+
+function resolveProjectRoot(startCwd = process.cwd()) {
+  let fallback = resolve(startCwd);
+  try {
+    fallback = realpathSync(fallback);
+  } catch {
+    /* keep resolved path */
+  }
+  const res = spawnSync('git', ['-C', fallback, 'rev-parse', '--show-toplevel'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  if (res.status === 0 && res.stdout?.trim()) {
+    const top = res.stdout.trim();
+    try {
+      return realpathSync(top);
+    } catch {
+      return resolve(top);
+    }
+  }
+  return fallback;
+}
+
+function defaultProjectStateDir(startCwd = process.cwd()) {
+  const root = resolveProjectRoot(startCwd);
+  const slug =
+    basename(root)
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'project';
+  const hash = createHash('sha256').update(root).digest('hex').slice(0, 10);
+  return join(homedir(), '.local', 'state', 'ns-dsh', 'projects', `${slug}-${hash}`);
+}
+
+function hasExplicitStateDirOverride(args) {
+  return Boolean(flagValue(args, '--state-dir') || process.env.NS_DSH_STATE_DIR);
+}
+
+function resolveStateDirReadOnly(args = []) {
+  return flagValue(args, '--state-dir') || process.env.NS_DSH_STATE_DIR || defaultProjectStateDir();
+}
+
+function resolveBoardDbEnv(stateDir, projectRoot) {
+  if (process.env.NS_BOARD_DB_PATH) return {};
+  if (existsSync(join(projectRoot, '.ns-dsh', 'board.db'))) return {};
+  return { NS_BOARD_DB_PATH: join(stateDir, 'board.db') };
+}
+
 function resolveStateDir(args) {
-  const raw = flagValue(args, '--state-dir') || process.env.NS_DSH_STATE_DIR || join(homedir(), '.local', 'state', 'ns-dsh');
+  const raw = resolveStateDirReadOnly(args);
   mkdirSync(raw, { recursive: true, mode: 0o700 });
   const st = lstatSync(raw);
   const curUid = typeof process.getuid === 'function' ? process.getuid() : null;
@@ -532,9 +622,14 @@ async function ensureForewispDaemon(stateDir, forewispPort) {
   if (!typesafeKey) {
     return { running: false, url: undefined, token: undefined, reason: 'TYPESAFE_API_KEY absent' };
   }
-  const rawBudgetDb = process.env.NS_JEV_BUDGET_DB || join(ROOT_DIR, '.local', 'e2e', 'jev-budget.sqlite');
+  const defaultStateBudgetDb = join(homedir(), '.local', 'state', 'ns-dsh', 'jev-budget.sqlite');
+  const legacyBudgetDb = join(ROOT_DIR, '.local', 'e2e', 'jev-budget.sqlite');
+  const rawBudgetDb = process.env.NS_JEV_BUDGET_DB || defaultStateBudgetDb;
   mkdirSync(dirname(rawBudgetDb), { recursive: true });
   const budgetDb = join(realpathSync(dirname(rawBudgetDb)), basename(rawBudgetDb));
+  if (!process.env.NS_JEV_BUDGET_DB && !existsSync(budgetDb) && existsSync(legacyBudgetDb)) {
+    copyFileSync(legacyBudgetDb, budgetDb);
+  }
   if (!existsSync(budgetDb)) {
     const initRes = spawnSync(FOREWISP_BIN, ['budget-init', budgetDb, FOREWISP_BUDGET_MICRODOLLARS], { stdio: 'inherit' });
     if (initRes.status !== 0) throw new Error(`Failed to initialize JEV budget ledger at ${budgetDb}`);
@@ -813,29 +908,63 @@ async function cmdWatchdog(args) {
   }
 }
 
+const SECRET_ENV_KEYS = ['TYPESAFE_API_KEY', 'DEEPSEEK_API_KEY', 'OCR_LLM_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+
+function stripChildSecrets(env) {
+  for (const secretKey of SECRET_ENV_KEYS) {
+    delete env[secretKey];
+  }
+  return env;
+}
+
 /** Returns started host descriptor, or `null` when a watchdog restart is aborted by shutdown tombstone. */
 async function ensureStarted(args, opts = {}) {
   const stateDir = resolveStateDir(args);
+  const projectRoot = hasExplicitStateDirOverride(args) ? process.cwd() : resolveProjectRoot();
   return withStateLock(stateDir, async () => {
     const hostMetaPath = join(stateDir, 'host.json');
     const existingMeta = readHostMetaSafe(hostMetaPath);
     if (opts.fromWatchdog && (!existingMeta || existingMeta.shutdownRequested === true)) {
       return null;
     }
-    const port = validateServicePort(
-      flagValue(args, '--port') ?? process.env.NS_DSH_PORT ?? existingMeta?.port,
-      DEFAULT_HOST_PORT,
-      'ns-dsh host',
-    );
-    const forewispPort = validateServicePort(
-      flagValue(args, '--forewisp-port') ?? process.env.NS_FOREWISP_PORT ?? existingMeta?.forewispPort,
-      DEFAULT_FOREWISP_PORT,
-      'forewisp daemon',
-    );
+    const rawExplicitHostPort = flagValue(args, '--port') ?? process.env.NS_DSH_PORT;
+    const rawExplicitFwPort = flagValue(args, '--forewisp-port') ?? process.env.NS_FOREWISP_PORT;
+    const explicitHostPort =
+      rawExplicitHostPort !== undefined ? validateServicePort(rawExplicitHostPort, DEFAULT_HOST_PORT, 'ns-dsh host') : undefined;
+    const explicitFwPort =
+      rawExplicitFwPort !== undefined ? validateServicePort(rawExplicitFwPort, DEFAULT_FOREWISP_PORT, 'forewisp daemon') : undefined;
+    if (explicitHostPort !== undefined && explicitFwPort !== undefined && explicitHostPort === explicitFwPort) {
+      throw new Error(`Refusing identical port ${explicitHostPort} for both ns-dsh host and Forewisp daemon`);
+    }
+
+    const tmuxSock = resolveTmuxSocket(stateDir);
+    const hasOwnTmux = spawnSync('tmux', ['-L', tmuxSock, 'has-session', '-t', 'ns-dsh'], { stdio: 'ignore' }).status === 0;
+    const recordedFwPid = readValidPid(join(stateDir, 'forewisp.pid'));
+    const hasOwnFw = Boolean(recordedFwPid && isOwnedProcess(recordedFwPid, [FOREWISP_BIN]));
+
+    let port;
+    if (explicitHostPort !== undefined) {
+      port = explicitHostPort;
+    } else if ((opts.fromWatchdog || hasOwnTmux) && existingMeta?.port !== undefined) {
+      port = validateServicePort(existingMeta.port, DEFAULT_HOST_PORT, 'ns-dsh host');
+    } else {
+      const preferredHost = Number.isInteger(existingMeta?.port) ? existingMeta.port : DEFAULT_HOST_PORT;
+      port = await pickFreePort(preferredHost, explicitFwPort, DEFAULT_HOST_PORT);
+    }
+
+    let forewispPort;
+    if (explicitFwPort !== undefined) {
+      forewispPort = explicitFwPort;
+    } else if ((opts.fromWatchdog || hasOwnFw) && existingMeta?.forewispPort !== undefined) {
+      forewispPort = validateServicePort(existingMeta.forewispPort, DEFAULT_FOREWISP_PORT, 'forewisp daemon');
+    } else {
+      const preferredFw = Number.isInteger(existingMeta?.forewispPort) ? existingMeta.forewispPort : DEFAULT_FOREWISP_PORT;
+      forewispPort = await pickFreePort(preferredFw, port, DEFAULT_FOREWISP_PORT);
+    }
     if (port === forewispPort) {
       throw new Error(`Refusing identical port ${port} for both ns-dsh host and Forewisp daemon`);
     }
-    const tmuxSock = resolveTmuxSocket(stateDir);
+
     if (!opts.fromWatchdog) {
       writeHostMetaAtomic(hostMetaPath, {
         ...(existingMeta && typeof existingMeta === 'object' ? existingMeta : {}),
@@ -843,6 +972,7 @@ async function ensureStarted(args, opts = {}) {
         forewispPort,
         tmuxSocket: tmuxSock,
         stateDir,
+        projectRoot,
         dshHome: DSH_HOME,
         shutdownRequested: false,
       });
@@ -875,19 +1005,19 @@ async function ensureStarted(args, opts = {}) {
 
       const has = spawnSync('tmux', ['-L', tmuxSock, 'has-session', '-t', 'ns-dsh'], { stdio: 'ignore' });
       if (has.status !== 0) {
-        const launchEnv = childEnv({
-          NS_DSH_TUI: '1',
-          NS_DSH_TUI_TOKEN: tuiToken,
-          NS_DSH_TMUX_SOCKET: tmuxSock,
-          NS_DSH_STATE_DIR: stateDir,
-          ...(isNewSession ? { NS_DSH_NEW_SESSION: '1' } : {}),
-          ...(resumeId ? { NS_DSH_RESUME: resumeId } : {}),
-          ...(fw.url ? { FOREWISP_URL: fw.url, NS_FOREWISP_URL: fw.url } : {}),
-          ...(fw.token ? { FOREWISP_API_TOKEN: fw.token } : {}),
-        });
-        for (const secretKey of ['TYPESAFE_API_KEY', 'DEEPSEEK_API_KEY', 'OCR_LLM_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN']) {
-          delete launchEnv[secretKey];
-        }
+        const launchEnv = stripChildSecrets(
+          childEnv({
+            NS_DSH_TUI: '1',
+            NS_DSH_TUI_TOKEN: tuiToken,
+            NS_DSH_TMUX_SOCKET: tmuxSock,
+            NS_DSH_STATE_DIR: stateDir,
+            ...resolveBoardDbEnv(stateDir, projectRoot),
+            ...(isNewSession ? { NS_DSH_NEW_SESSION: '1' } : {}),
+            ...(resumeId ? { NS_DSH_RESUME: resumeId } : {}),
+            ...(fw.url ? { FOREWISP_URL: fw.url, NS_FOREWISP_URL: fw.url } : {}),
+            ...(fw.token ? { FOREWISP_API_TOKEN: fw.token } : {}),
+          }),
+        );
         if (!fw.token) {
           delete launchEnv.FOREWISP_API_TOKEN;
           delete launchEnv.FOREWISP_URL;
@@ -916,7 +1046,7 @@ async function ensureStarted(args, opts = {}) {
             String(port),
             '--no-open',
           ],
-          { env: launchEnv, stdio: 'pipe', encoding: 'utf8' },
+          { cwd: projectRoot, env: launchEnv, stdio: 'pipe', encoding: 'utf8' },
         );
         if (spawned.status !== 0) {
           throw new Error(`Failed starting tmux host: ${spawned.stderr || spawned.stdout || `exit=${spawned.status}`}`);
@@ -1128,6 +1258,159 @@ async function cmdBoard(args, tasksOnly = false) {
   console.log(JSON.stringify(tasksOnly ? boardPayload : { url: `http://127.0.0.1:${port}/`, board: boardPayload }, null, 2));
 }
 
+async function cmdWeb(args) {
+  const noOpen = args.includes('--no-open') || process.env.NS_DSH_NO_OPEN === '1';
+  const filteredArgs = args.filter((a) => a !== '--no-open');
+  const host = await ensureStarted(filteredArgs, { quiet: true });
+  if (!host) throw new Error('Host startup aborted due to concurrent shutdown');
+  const url = `http://127.0.0.1:${host.port}/`;
+  if (!noOpen && process.platform === 'darwin' && existsSync('/usr/bin/open')) {
+    spawnSync('/usr/bin/open', [url], { stdio: 'ignore' });
+  }
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        url,
+        port: host.port,
+        forewispPort: host.forewispPort,
+        stateDir: host.stateDir,
+        tmuxSocket: host.tmuxSocket,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+async function cmdRun(args) {
+  const stateDir = resolveStateDir(args);
+  const projectRoot = hasExplicitStateDirOverride(args) ? process.cwd() : resolveProjectRoot();
+  const optArgs = [];
+  const taskParts = [];
+  let hasApprovalPolicy = false;
+  let hasHelp = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--state-dir') {
+      const val = args[i + 1];
+      if (!val || val.startsWith('-')) throw new Error('flag --state-dir requires a value');
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('--state-dir=')) {
+      continue;
+    }
+    if (a === '-p' || a === '--prompt') {
+      const val = args[i + 1];
+      if (!val) throw new Error(`flag ${a} requires a value`);
+      taskParts.push(val);
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('--prompt=') || a.startsWith('-p=')) {
+      taskParts.push(a.slice(a.indexOf('=') + 1));
+      continue;
+    }
+    if (a === '--resume') {
+      const val = args[i + 1];
+      if (!val || val.startsWith('-')) throw new Error('flag --resume requires a value');
+      optArgs.push('--session-id', val);
+      i += 1;
+      continue;
+    }
+    if (a === '-h' || a === '--help') {
+      hasHelp = true;
+      optArgs.push(a);
+      continue;
+    }
+    if (a === '--approval-policy') {
+      hasApprovalPolicy = true;
+      const val = args[i + 1];
+      if (!val || val.startsWith('-')) throw new Error('flag --approval-policy requires a value');
+      optArgs.push(a, val);
+      i += 1;
+      continue;
+    }
+    if (a === '--session-id' || a === '--permission-mode' || a === '--add-dir' || a === '--patch') {
+      const val = args[i + 1];
+      if (!val || val.startsWith('-')) throw new Error(`flag ${a} requires a value`);
+      optArgs.push(a, val);
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('-') && a !== '-') {
+      optArgs.push(a);
+      continue;
+    }
+    taskParts.push(a);
+  }
+  if (!hasApprovalPolicy && !hasHelp) {
+    optArgs.push('--approval-policy', 'never');
+  }
+  const taskText = taskParts.join(' ');
+  const safeTaskText = taskText && taskText !== '-' && taskText.startsWith('-') ? `Task: ${taskText}` : taskText;
+  const finalArgs = ['--profile', 'headless', ...optArgs, ...(safeTaskText ? [safeTaskText] : [])];
+
+  // Reuse an already-running authenticated Forewisp daemon for this stateDir without spawning a new daemon.
+  let fwUrl;
+  let fwToken;
+  const existingMeta = readHostMetaSafe(join(stateDir, 'host.json'));
+  const tokenPath = join(stateDir, 'forewisp.token');
+  if (Number.isInteger(existingMeta?.forewispPort) && existsSync(tokenPath)) {
+    try {
+      const candidateToken = readFileSync(tokenPath, 'utf8').trim();
+      const candidateUrl = `http://127.0.0.1:${existingMeta.forewispPort}`;
+      const probe = await probeForewispAuthenticated(candidateUrl, candidateToken);
+      if (probe.verified) {
+        fwUrl = candidateUrl;
+        fwToken = candidateToken;
+      }
+    } catch {
+      /* run without Forewisp daemon if none is active */
+    }
+  }
+
+  const runEnv = stripChildSecrets(
+    childEnv({
+      NS_DSH_STATE_DIR: stateDir,
+      ...resolveBoardDbEnv(stateDir, projectRoot),
+      ...(fwUrl && fwToken ? { FOREWISP_URL: fwUrl, NS_FOREWISP_URL: fwUrl, FOREWISP_API_TOKEN: fwToken } : {}),
+    }),
+  );
+  if (!fwToken) {
+    delete runEnv.FOREWISP_API_TOKEN;
+    delete runEnv.FOREWISP_URL;
+    delete runEnv.NS_FOREWISP_URL;
+  }
+
+  const res = spawnSync(process.execPath, [DSH_BIN, ...finalArgs], {
+    cwd: projectRoot,
+    env: runEnv,
+    stdio: 'inherit',
+  });
+  if (res.error) throw res.error;
+  process.exitCode = res.status ?? (res.signal ? 1 : 0);
+}
+
+function cmdLink(args) {
+  const rawBinDir = flagValue(args, '--bin-dir') || process.env.NS_DSH_BIN_DIR || join(homedir(), '.local', 'bin');
+  const binDir = resolve(rawBinDir);
+  mkdirSync(binDir, { recursive: true });
+  const shimTemplatePath = join(ROOT_DIR, 'scripts', 'ns-dsh-shim.sh');
+  const cliEntry = fileURLToPath(import.meta.url);
+  const rendered = readFileSync(shimTemplatePath, 'utf8').replaceAll('@NS_DSH_CLI_BIN@', cliEntry);
+  const targetShim = join(binDir, 'ns-dsh');
+  const tmpShim = `${targetShim}.tmp.${process.pid}`;
+  writeFileSync(tmpShim, rendered, { mode: 0o755 });
+  chmodSync(tmpShim, 0o755);
+  renameSync(tmpShim, targetShim);
+  const aliasPath = join(binDir, 'nsd');
+  rmSync(aliasPath, { force: true });
+  symlinkSync(targetShim, aliasPath);
+  console.log(JSON.stringify({ ok: true, binDir, nsDsh: targetShim, alias: aliasPath, cli: cliEntry }, null, 2));
+}
+
 async function main() {
   const [, , cmd, ...rest] = process.argv;
   if (!cmd) {
@@ -1138,8 +1421,14 @@ async function main() {
     await cmdTui(rest);
   } else if (cmd === '--resume' || cmd === '--new') {
     await cmdTui([cmd, ...rest]);
+  } else if (cmd === '-p' || cmd === '--prompt') {
+    await cmdRun([cmd, ...rest]);
+  } else if (cmd === 'run') {
+    await cmdRun(rest);
   } else if (cmd === 'tui') {
     await cmdTui(rest);
+  } else if (cmd === 'web' || cmd === 'open') {
+    await cmdWeb(rest);
   } else if (cmd === 'start') {
     await ensureStarted(rest);
   } else if (cmd === '__watchdog') {
@@ -1151,7 +1440,9 @@ async function main() {
   } else if (cmd === 'tasks') {
     await cmdBoard(rest, true);
   } else if (cmd === 'status') {
-    cmdStatus();
+    cmdStatus(rest);
+  } else if (cmd === 'link') {
+    cmdLink(rest);
   } else if (cmd === 'install') {
     cmdInstall(rest);
   } else if (cmd === 'upgrade') {
